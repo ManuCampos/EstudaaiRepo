@@ -518,12 +518,27 @@ const progressoModule = {
   getStats(alunoId, planoId) {
     const plano = planosModule.getById(planoId);
     if (!plano) return null;
-    const totalAulas = Object.values(plano.plan).reduce((a, d) => a + d.topicos.length, 0);
+    // Usa o edital como fonte de verdade para totalAulas, evitando
+    // que após regenerarFuturo (que só guarda os tópicos restantes)
+    // o denominador fique menor que aulasFeitas e gere >100%.
+    const edital = editaisModule.getById(plano.editalId);
+    const materiaIds = plano.rotina?.materiaIds;
+    const materias = edital
+      ? (materiaIds?.length > 0 ? edital.materias.filter(m => materiaIds.includes(m.id)) : edital.materias)
+      : [];
+    const allEditalTopicIds = new Set(materias.flatMap(m => (m.topicos || []).map(t => t.id)));
+    const totalAulas = allEditalTopicIds.size || Object.values(plano.plan).reduce((a, d) => a + d.topicos.length, 0);
     const totalReviews = Object.values(plano.plan).reduce((a, d) => a + d.reviews.length, 0);
     const prog = storage.get().progresso.filter(p => p.alunoId === alunoId && p.planoId === planoId && p.done);
-    const aulasFeitas = prog.filter(p => !p.key.endsWith("-rev")).length;
+    // Conta topicIds únicos feitos (evita dupla contagem se a mesma key foi gravada mais de uma vez)
+    const doneTopicIdSet = new Set(
+      prog.filter(p => !p.key.endsWith("-rev")).map(p => p.key.substring(11))
+    );
+    const aulasFeitas = allEditalTopicIds.size > 0
+      ? [...doneTopicIdSet].filter(id => allEditalTopicIds.has(id)).length
+      : doneTopicIdSet.size;
     const reviewsFeitas = prog.filter(p => p.key.endsWith("-rev")).length;
-    const pct = totalAulas ? Math.round((aulasFeitas / totalAulas) * 100) : 0;
+    const pct = totalAulas ? Math.min(100, Math.round((aulasFeitas / totalAulas) * 100)) : 0;
     const aulasPorDia = plano.rotina?.aulasPorDia || 1;
     const diasRestantes = aulasFeitas < totalAulas ? Math.ceil((totalAulas - aulasFeitas) / aulasPorDia) : 0;
     const previsao = diasRestantes > 0
@@ -972,10 +987,16 @@ planosModule.regenerarFuturo = function(planoId, alunoId, novaRotina) {
       }
     }
   }
+  // Preserva os dias passados para que o histórico de semanas anteriores continue visível
+  const pastPlan = {};
+  Object.entries(plano.plan || {}).forEach(([key, day]) => {
+    if (key < todayKey) pastPlan[key] = day;
+  });
+  const fullPlan = { ...pastPlan, ...plan };
   // Update existing plan in-place (keep planoId and progress)
   storage.set(db => ({
     ...db,
-    planos: db.planos.map(p => p.id === planoId ? { ...p, rotina, plan } : p),
+    planos: db.planos.map(p => p.id === planoId ? { ...p, rotina, plan: fullPlan } : p),
   }));
   return this.getById(planoId);
 };
@@ -3764,16 +3785,21 @@ function AdminDebug() {
   const edital = plano ? editaisModule.getById(plano.editalId) : null;
   const dayData = plano?.plan?.[simKey] || { topicos:[], reviews:[] };
 
-  // Compute cumulative stats up to simKey
+  // Compute cumulative stats up to simKey (usa edital como fonte de verdade)
   function statsUpTo(key) {
     if (!plano) return null;
     const prog = storage.get().progresso.filter(p => p.alunoId === selectedAluno && p.planoId === plano.id && p.done);
-    const totalAulas = Object.values(plano.plan).reduce((a,d) => a+d.topicos.length, 0);
-    const aulasFeitas = prog.filter(p => {
-      const dk = p.key.split("-").slice(0,3).join("-");
-      return dk <= key && !p.key.endsWith("-rev");
-    }).length;
-    const pct = totalAulas ? Math.round((aulasFeitas/totalAulas)*100) : 0;
+    const ed = editaisModule.getById(plano.editalId);
+    const mids = plano.rotina?.materiaIds;
+    const mats = ed ? (mids?.length > 0 ? ed.materias.filter(m => mids.includes(m.id)) : ed.materias) : [];
+    const allIds = new Set(mats.flatMap(m => (m.topicos||[]).map(t => t.id)));
+    const totalAulas = allIds.size || Object.values(plano.plan).reduce((a,d) => a+d.topicos.length, 0);
+    const doneIds = new Set(
+      prog.filter(p => { const dk = p.key.split("-").slice(0,3).join("-"); return dk <= key && !p.key.endsWith("-rev"); })
+          .map(p => p.key.substring(11))
+    );
+    const aulasFeitas = allIds.size > 0 ? [...doneIds].filter(id => allIds.has(id)).length : doneIds.size;
+    const pct = totalAulas ? Math.min(100, Math.round((aulasFeitas/totalAulas)*100)) : 0;
     return { totalAulas, aulasFeitas, pct };
   }
 
@@ -6576,3 +6602,4 @@ export default function App() {
     </>
   );
 }
+    
