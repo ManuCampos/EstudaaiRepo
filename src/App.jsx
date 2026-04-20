@@ -518,25 +518,23 @@ const progressoModule = {
   getStats(alunoId, planoId) {
     const plano = planosModule.getById(planoId);
     if (!plano) return null;
-    // Usa o edital como fonte de verdade para totalAulas, evitando
-    // que após regenerarFuturo (que só guarda os tópicos restantes)
-    // o denominador fique menor que aulasFeitas e gere >100%.
-    const edital = editaisModule.getById(plano.editalId);
-    const materiaIds = plano.rotina?.materiaIds;
-    const materias = edital
-      ? (materiaIds?.length > 0 ? edital.materias.filter(m => materiaIds.includes(m.id)) : edital.materias)
-      : [];
-    const allEditalTopicIds = new Set(materias.flatMap(m => (m.topicos || []).map(t => t.id)));
-    const totalAulas = allEditalTopicIds.size || Object.values(plano.plan).reduce((a, d) => a + d.topicos.length, 0);
-    const totalReviews = Object.values(plano.plan).reduce((a, d) => a + d.reviews.length, 0);
     const prog = storage.get().progresso.filter(p => p.alunoId === alunoId && p.planoId === planoId && p.done);
-    // Conta topicIds únicos feitos (evita dupla contagem se a mesma key foi gravada mais de uma vez)
+
+    // IDs únicos de tópicos (aulas) já concluídos — chave: "YYYY-MM-DD-{topicId}"
     const doneTopicIdSet = new Set(
       prog.filter(p => !p.key.endsWith("-rev")).map(p => p.key.substring(11))
     );
-    const aulasFeitas = allEditalTopicIds.size > 0
-      ? [...doneTopicIdSet].filter(id => allEditalTopicIds.has(id)).length
-      : doneTopicIdSet.size;
+    const aulasFeitas = doneTopicIdSet.size;
+
+    // Tópicos no plano atual que ainda NÃO foram feitos.
+    // Após regenerarFuturo o plano só tem os restantes; após generate() tem todos.
+    // Em ambos os casos: total = feitas + ainda-no-plano-não-feitas.
+    const notDoneInPlan = Object.values(plano.plan)
+      .flatMap(d => d.topicos)
+      .filter(t => !doneTopicIdSet.has(t.id)).length;
+    const totalAulas = aulasFeitas + notDoneInPlan;
+
+    const totalReviews = Object.values(plano.plan).reduce((a, d) => a + d.reviews.length, 0);
     const reviewsFeitas = prog.filter(p => p.key.endsWith("-rev")).length;
     const pct = totalAulas ? Math.min(100, Math.round((aulasFeitas / totalAulas) * 100)) : 0;
     const aulasPorDia = plano.rotina?.aulasPorDia || 1;
@@ -3785,20 +3783,17 @@ function AdminDebug() {
   const edital = plano ? editaisModule.getById(plano.editalId) : null;
   const dayData = plano?.plan?.[simKey] || { topicos:[], reviews:[] };
 
-  // Compute cumulative stats up to simKey (usa edital como fonte de verdade)
+  // Compute cumulative stats up to simKey
   function statsUpTo(key) {
     if (!plano) return null;
     const prog = storage.get().progresso.filter(p => p.alunoId === selectedAluno && p.planoId === plano.id && p.done);
-    const ed = editaisModule.getById(plano.editalId);
-    const mids = plano.rotina?.materiaIds;
-    const mats = ed ? (mids?.length > 0 ? ed.materias.filter(m => mids.includes(m.id)) : ed.materias) : [];
-    const allIds = new Set(mats.flatMap(m => (m.topicos||[]).map(t => t.id)));
-    const totalAulas = allIds.size || Object.values(plano.plan).reduce((a,d) => a+d.topicos.length, 0);
     const doneIds = new Set(
       prog.filter(p => { const dk = p.key.split("-").slice(0,3).join("-"); return dk <= key && !p.key.endsWith("-rev"); })
           .map(p => p.key.substring(11))
     );
-    const aulasFeitas = allIds.size > 0 ? [...doneIds].filter(id => allIds.has(id)).length : doneIds.size;
+    const aulasFeitas = doneIds.size;
+    const notDoneInPlan = Object.values(plano.plan).flatMap(d => d.topicos).filter(t => !doneIds.has(t.id)).length;
+    const totalAulas = aulasFeitas + notDoneInPlan;
     const pct = totalAulas ? Math.min(100, Math.round((aulasFeitas/totalAulas)*100)) : 0;
     return { totalAulas, aulasFeitas, pct };
   }
@@ -6602,4 +6597,3 @@ export default function App() {
     </>
   );
 }
-    
