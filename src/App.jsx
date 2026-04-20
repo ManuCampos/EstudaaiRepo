@@ -3111,9 +3111,46 @@ function CoachPlanoTabela({ aluno, plano, setModalAula }) {
   );
 }
 
+// Constrói mapa topicId → { name, materiaName, materiaColor } a partir do edital
+function buildTopicMap(edital) {
+  const map = {};
+  if (!edital) return map;
+  for (const m of (edital.materias || [])) {
+    for (const t of (m.topicos || [])) {
+      map[t.id] = { name: t.name, materiaName: m.name, materiaColor: m.color };
+    }
+  }
+  return map;
+}
+
 // Componente: Vista em cronograma
 function CoachPlanoCronograma({ aluno, plano, setModalAula }) {
-  const sorted = Object.keys(plano.plan || {}).sort();
+  const edital = editaisModule.getById(plano.editalId);
+  const topicMap = buildTopicMap(edital);
+
+  // Dias do plano atual
+  const planDays = { ...(plano.plan || {}) };
+
+  // Reconstrói dias históricos a partir do progresso (datas que não estão no plano)
+  const todayKey = localDateKey();
+  const prog = storage.get().progresso.filter(
+    p => p.alunoId === aluno.id && p.planoId === plano.id && p.done && !p.key.endsWith("-rev")
+  );
+  prog.forEach(p => {
+    const date = p.key.substring(0, 10);
+    const topicId = p.key.substring(11);
+    if (date >= todayKey) return; // só datas passadas
+    if (!planDays[date]) {
+      planDays[date] = { date, topicos: [], reviews: [], _history: true };
+    }
+    // Adiciona o tópico ao dia histórico se ainda não estiver lá
+    if (!planDays[date].topicos.find(t => t.id === topicId)) {
+      const info = topicMap[topicId] || { name: topicId, materiaName: "", materiaColor: "#6b7280" };
+      planDays[date].topicos.push({ id: topicId, ...info });
+    }
+  });
+
+  const sorted = Object.keys(planDays).sort();
   let weekStart = null;
   const semanas = [];
 
@@ -3129,7 +3166,7 @@ function CoachPlanoCronograma({ aluno, plano, setModalAula }) {
       semanas.push({ start: wKey, end: localDateKey(wEnd), dias: {} });
     }
     const currentWeek = semanas[semanas.length - 1];
-    if (!currentWeek.dias[date]) currentWeek.dias[date] = plano.plan[date];
+    if (!currentWeek.dias[date]) currentWeek.dias[date] = planDays[date];
   });
 
   return (
@@ -3311,6 +3348,26 @@ function AlunoPlano({ user, refresh }) {
   const weekDays=getWeekDays(weekOffset);
   const wLabel=`${new Date(weekDays[0]+"T00:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"})} – ${new Date(weekDays[6]+"T00:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"})}`;
 
+  // Mapa topicId → info (para reconstruir histórico de dias não presentes no plano)
+  const _editalForHistory = plano ? editaisModule.getById(plano.editalId) : null;
+  const _topicMapHistory  = buildTopicMap(_editalForHistory);
+  const _todayKey = localDateKey(today);
+  function getDayData(dk) {
+    if (plano?.plan?.[dk]) return plano.plan[dk];
+    // Reconstrói dia histórico a partir do progresso (só datas passadas)
+    if (!plano || dk >= _todayKey) return { topicos: [], reviews: [] };
+    const doneProg = storage.get().progresso.filter(
+      p => p.alunoId === user.id && p.planoId === plano.id && p.done && p.key.startsWith(dk + "-") && !p.key.endsWith("-rev")
+    );
+    if (doneProg.length === 0) return { topicos: [], reviews: [] };
+    const topicos = doneProg.map(p => {
+      const tid = p.key.substring(11);
+      const info = _topicMapHistory[tid] || { name: tid, materiaName: "", materiaColor: "#6b7280" };
+      return { id: tid, ...info };
+    });
+    return { topicos, reviews: [], _history: true };
+  }
+
   if (!plano) return (
     <div>
       <div className="ph"><div><h1>Meu Plano</h1><p>Gere seu plano personalizado</p></div></div>
@@ -3445,7 +3502,8 @@ function AlunoPlano({ user, refresh }) {
         {weekOffset!==0&&<button className="btn btn-ghost btn-sm" onClick={()=>setWeekOffset(0)}>Hoje</button>}
       </div>
       {weekDays.map(dk=>{
-        const d=plano.plan[dk]||{topicos:[],reviews:[]};
+        const d=getDayData(dk);
+        const isHistory=d._history===true;
         const date=new Date(dk+"T00:00:00");
         const isToday=dk===localDateKey(today);
         return (
@@ -3454,8 +3512,9 @@ function AlunoPlano({ user, refresh }) {
               <div><div style={{fontFamily:"Cabinet Grotesk",fontWeight:700,fontSize:14}}>{DAYS_FULL[date.getDay()]}</div><div className="text-xs text-dim">{date.toLocaleDateString("pt-BR")}</div></div>
               {isToday&&<span className="badge bg">Hoje</span>}
             </div>
+            {isHistory&&<div style={{fontSize:10,color:"var(--green)",fontWeight:700,marginBottom:8,letterSpacing:.5}}>✅ CONCLUÍDO</div>}
             {d.topicos.length===0&&d.reviews.length===0&&<p className="text-sm text-muted">Nenhum conteúdo</p>}
-            {d.topicos.length>0&&<div className="mb3">{d.topicos.map((t,i)=>{const key=`${dk}-${t.id}`;const done=progressoModule.isDone(user.id,plano.id,key);const material=getTopicMaterial(t.id);return(<div key={i} className={`topic-row ${done?"done":""}`}><div className="dot-c" style={{background:t.materiaColor}}/><span className="tr-name">{t.name}</span>{(t.materialUrl||material)&&<button onClick={()=>setShowPdfModal(t.id)} className="mat-link" style={{background:"none",border:"none",cursor:"pointer",padding:"0 4px",fontSize:11,color:"var(--blue)"}}>📎</button>}<span className="tr-tag">{t.materiaName}</span><button className={`ck-btn ${done?"ck":""}`} onClick={()=>toggle(key)}>{done&&<CheckIcon/>}</button></div>);})}</div>}
+            {d.topicos.length>0&&<div className="mb3">{d.topicos.map((t,i)=>{const key=`${dk}-${t.id}`;const done=progressoModule.isDone(user.id,plano.id,key)||isHistory;const material=getTopicMaterial(t.id);return(<div key={i} className={`topic-row ${done?"done":""}`}><div className="dot-c" style={{background:t.materiaColor}}/><span className="tr-name">{t.name}</span>{(t.materialUrl||material)&&<button onClick={()=>setShowPdfModal(t.id)} className="mat-link" style={{background:"none",border:"none",cursor:"pointer",padding:"0 4px",fontSize:11,color:"var(--blue)"}}>📎</button>}<span className="tr-tag">{t.materiaName}</span>{!isHistory&&<button className={`ck-btn ${done?"ck":""}`} onClick={()=>toggle(key)}>{done&&<CheckIcon/>}</button>}{isHistory&&<CheckIcon/>}</div>);})}</div>}
             {isToday&&allTodayDone&&<button className="adiantar-btn" onClick={()=>setShowAdiantar(true)}>⚡ Adiantar aulas de amanhã</button>}
             {d.reviews.length>0&&<div className="rev-sec"><div className="rev-lbl">Revisões</div>{d.reviews.map((r,i)=>{const key=`${dk}-${r.id}-rev`;const done=progressoModule.isDone(user.id,plano.id,key);const nota=progressoModule.getNote(user.id,plano.id,r.id);const isOpen=expandedNote===`${dk}-${r.id}`;return(<div key={i}><div className={`topic-row ${done?"done":""}`}><div className="dot-c" style={{background:r.materiaColor}}/><span className="tr-name">{r.name}</span><span className="tr-tag">🕐 {r.reviewInterval}d</span>{nota&&<button onClick={()=>setExpandedNote(isOpen?null:`${dk}-${r.id}`)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:isOpen?"var(--amber)":"var(--t3)",padding:"0 4px",flexShrink:0}} title="Ver anotações">📝</button>}<button className={`ck-btn ${done?"ck":""}`} onClick={()=>toggle(key)}>{done&&<CheckIcon/>}</button></div>{isOpen&&nota&&<div style={{margin:"6px 0 8px 24px",padding:"10px 13px",background:"var(--s2)",borderRadius:9,borderLeft:"3px solid var(--amber)",fontSize:12,color:"var(--t2)",lineHeight:1.6,whiteSpace:"pre-wrap"}}>{nota}</div>}</div>);})}</div>}
           </div>
