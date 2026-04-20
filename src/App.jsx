@@ -172,6 +172,7 @@ const defaultDB = {
   simulados: [],
   questoes: [],
   tentativas: [],
+  feedbackSimulado: [],
   resumoComments: [],
   resumoAdditions: [],
   materialFiles: [],
@@ -797,6 +798,52 @@ const tentativasModule = {
     const tentativas = (storage.get().tentativas || []).filter(t => t.simuladoId === simuladoId && t.status === "finalizada");
     return { simulado, tentativas };
   }
+};
+
+// ============================================================
+// MODULE: feedbackSimulado (Coach → Aluno)
+// ============================================================
+const feedbackModule = {
+  // Salva ou atualiza rascunho de feedback
+  salvar(coachId, tentativaId, dados) {
+    storage.set(db => {
+      const feedbacks = db.feedbackSimulado || [];
+      const tentativa = (db.tentativas || []).find(t => t.id === tentativaId);
+      if (!tentativa) return db;
+      const idx = feedbacks.findIndex(f => f.tentativaId === tentativaId);
+      const feedback = {
+        id: idx >= 0 ? feedbacks[idx].id : `fb_${Math.random().toString(36).substr(2,9)}`,
+        tentativaId,
+        simuladoId: tentativa.simuladoId,
+        alunoId: tentativa.alunoId,
+        coachId,
+        comentariosQuestoes: dados.comentariosQuestoes || [],
+        orientacoesGerais: dados.orientacoesGerais || "",
+        sugestoesConteudo: dados.sugestoesConteudo || "",
+        temasRevisar: dados.temasRevisar || "",
+        status: dados.status || "rascunho",
+        criadoEm: idx >= 0 ? feedbacks[idx].criadoEm : new Date().toISOString(),
+        atualizadoEm: new Date().toISOString(),
+        enviadoEm: dados.status === "enviado" ? new Date().toISOString() : (idx >= 0 ? feedbacks[idx].enviadoEm : null),
+      };
+      return {
+        ...db,
+        feedbackSimulado: idx >= 0
+          ? feedbacks.map((f, i) => i === idx ? feedback : f)
+          : [...feedbacks, feedback]
+      };
+    });
+  },
+  getByTentativa(tentativaId) {
+    return (storage.get().feedbackSimulado || []).find(f => f.tentativaId === tentativaId) || null;
+  },
+  getByAluno(alunoId) {
+    return (storage.get().feedbackSimulado || []).filter(f => f.alunoId === alunoId && f.status === "enviado");
+  },
+  getEnviadoParaAluno(tentativaId) {
+    const fb = (storage.get().feedbackSimulado || []).find(f => f.tentativaId === tentativaId);
+    return fb?.status === "enviado" ? fb : null;
+  },
 };
 
 // Adiantar aulas: move N topics from future days to today
@@ -3880,6 +3927,7 @@ function AlunoSimulados({ user, refresh }) {
   const editais = editaisModule.getByAluno(user.id);
   const [editalId, setEditalId] = useState(editais[0]?.id || "");
   const [resolvendo, setResolvendo] = useState(null);
+  const [verFeedback, setVerFeedback] = useState(null); // tentativaId
 
   const edital = editaisModule.getById(editalId);
   const simulados = edital ? simuladosModule.getByEdital(editalId) : [];
@@ -3925,6 +3973,8 @@ function AlunoSimulados({ user, refresh }) {
             const tentativas = tentativasModule.getBySimuladoAluno(sim.id, user.id);
             const finalizadas = tentativas.filter(t => t.status === "finalizada");
             const emAndamento = tentativas.find(t => t.status === "em_andamento");
+            // Verifica se alguma tentativa tem feedback enviado
+            const tentativaComFeedback = finalizadas.find(t => feedbackModule.getEnviadoParaAluno(t.id));
 
             return (
               <div
@@ -3933,23 +3983,26 @@ function AlunoSimulados({ user, refresh }) {
                   padding: 16,
                   borderRadius: 8,
                   background: "var(--s2)",
-                  border: "1px solid var(--b2)",
+                  border: tentativaComFeedback ? "1px solid rgba(34,211,165,0.35)" : "1px solid var(--b2)",
                   display: "flex",
                   flexDirection: "column",
                   gap: 12
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--t1)", marginBottom: 4 }}>
-                    {sim.nome}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--t1)" }}>{sim.nome}</div>
+                    {tentativaComFeedback && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--green-d)", color: "var(--green)", border: "1px solid rgba(34,211,165,0.3)" }}>
+                        📨 Feedback disponível
+                      </span>
+                    )}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 6 }}>
                     {sim.tipo === "geral" ? "Simulado Geral" : "Simulado Específico"}
                   </div>
                   {sim.descricao && (
-                    <div style={{ fontSize: 12, color: "var(--t2)", marginBottom: 8 }}>
-                      {sim.descricao}
-                    </div>
+                    <div style={{ fontSize: 12, color: "var(--t2)", marginBottom: 6 }}>{sim.descricao}</div>
                   )}
                 </div>
 
@@ -3962,20 +4015,26 @@ function AlunoSimulados({ user, refresh }) {
                   )}
                 </div>
 
-                <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
+                <div style={{ display: "flex", gap: 8, marginTop: "auto", flexWrap: "wrap" }}>
+                  {tentativaComFeedback && (
+                    <button
+                      onClick={() => setVerFeedback(tentativaComFeedback.id)}
+                      style={{
+                        flex: 1, minWidth: 120,
+                        padding: "8px 12px", borderRadius: 6, border: "none",
+                        background: "var(--green)", color: "#07080f",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer"
+                      }}
+                    >
+                      📨 Ver Feedback
+                    </button>
+                  )}
                   {emAndamento ? (
                     <button
                       onClick={() => setResolvendo(emAndamento.id)}
                       style={{
-                        flex: 1,
-                        padding: "8px 12px",
-                        borderRadius: 6,
-                        border: "none",
-                        background: "var(--amber)",
-                        color: "white",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: "pointer"
+                        flex: 1, padding: "8px 12px", borderRadius: 6, border: "none",
+                        background: "var(--amber)", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer"
                       }}
                     >
                       Continuar
@@ -3987,18 +4046,11 @@ function AlunoSimulados({ user, refresh }) {
                         setResolvendo(nova.id);
                       }}
                       style={{
-                        flex: 1,
-                        padding: "8px 12px",
-                        borderRadius: 6,
-                        border: "none",
-                        background: "var(--blue)",
-                        color: "white",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: "pointer"
+                        flex: 1, padding: "8px 12px", borderRadius: 6, border: "none",
+                        background: "var(--blue)", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer"
                       }}
                     >
-                      Resolver
+                      {finalizadas.length > 0 ? "Resolver novamente" : "Resolver"}
                     </button>
                   )}
                 </div>
@@ -4010,6 +4062,9 @@ function AlunoSimulados({ user, refresh }) {
 
       {resolvendo && (
         <ResolverSimulado tentativaId={resolvendo} onVoltar={() => { setResolvendo(null); refresh?.(); }} />
+      )}
+      {verFeedback && (
+        <ModalVerFeedback tentativaId={verFeedback} onClose={() => setVerFeedback(null)} />
       )}
     </div>
   );
@@ -5562,7 +5617,9 @@ function ModalGerenciarSimulado({ simuladoId, coachId, onClose }) {
   const simulado = simuladosModule.getById(simuladoId);
   const questoes = questoesModule.getBySimulado(simuladoId);
   const [adicionandoQuestao, setAdicionandoQuestao] = useState(false);
-  const [tab, setTab] = useState("questoes"); // "questoes" ou "resultados"
+  const [tab, setTab] = useState("questoes"); // "questoes" | "resultados"
+  const [feedbackTentativaId, setFeedbackTentativaId] = useState(null);
+  const [tick, setTick] = useState(0);
   const tentativas = (storage.get().tentativas || []).filter(t => t.simuladoId === simuladoId && t.status === "finalizada");
   const alunos = usersModule.getAlunos(coachId);
 
@@ -5725,67 +5782,77 @@ function ModalGerenciarSimulado({ simuladoId, coachId, onClose }) {
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {tentativas.map(tent => {
                   const aluno = alunos.find(a => a.id === tent.alunoId);
-                  const minutos = Math.floor(tent.tempoDecorridoSegundos / 60);
-                  const segundos = tent.tempoDecorridoSegundos % 60;
+                  const minutos = Math.floor((tent.tempoDecorridoSegundos||0) / 60);
+                  const segundos = (tent.tempoDecorridoSegundos||0) % 60;
+                  const fb = feedbackModule.getByTentativa(tent.id);
+                  const fbEnviado = fb?.status === "enviado";
+                  const pct = questoes.length > 0 ? Math.round((tent.acertos / questoes.length) * 100) : 0;
 
                   return (
-                    <div
-                      key={tent.id}
-                      style={{
-                        padding: 14,
-                        borderRadius: 8,
-                        background: "var(--s2)",
-                        border: "1px solid var(--b2)"
-                      }}
-                    >
+                    <div key={tent.id} style={{ padding: 14, borderRadius: 8, background: "var(--s2)", border: `1px solid ${fbEnviado ? "rgba(34,211,165,0.3)" : "var(--b2)"}` }}>
+                      {/* Cabeçalho */}
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--t1)", marginBottom: 2 }}>
                             {aluno?.name || "Aluno"}
                           </div>
                           <div style={{ fontSize: 11, color: "var(--t3)" }}>
-                            {new Date(tent.finishedAt).toLocaleDateString("pt-BR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                            {new Date(tent.finishedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                            {tent.tempoDecorridoSegundos ? ` · ⏱️ ${minutos}m ${segundos}s` : ""}
                           </div>
                         </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 18, fontWeight: 700, color: tent.acertos >= tent.erros ? "var(--green)" : "var(--red)", marginBottom: 4 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                          <div style={{ fontSize: 20, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: pct >= 60 ? "var(--green)" : "var(--red)" }}>
                             {tent.acertos}/{questoes.length}
                           </div>
-                          <div style={{ fontSize: 11, color: "var(--t3)" }}>
-                            ⏱️ {minutos}m {segundos}s
-                          </div>
+                          <span className={`badge ${pct >= 60 ? "bg" : "br"}`}>{pct}%</span>
                         </div>
                       </div>
 
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                      {/* Grid acertos/erros */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                         <div style={{ padding: 8, borderRadius: 6, background: "var(--s3)", textAlign: "center" }}>
-                          <div style={{ fontSize: 11, color: "var(--green)", fontWeight: 600 }}>✓ Acertos</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--green)" }}>{tent.acertos}</div>
+                          <div style={{ fontSize: 11, color: "var(--green)", fontWeight: 700 }}>✓ Acertos</div>
+                          <div style={{ fontSize: 18, fontWeight: 900, color: "var(--green)" }}>{tent.acertos}</div>
                         </div>
                         <div style={{ padding: 8, borderRadius: 6, background: "var(--s3)", textAlign: "center" }}>
-                          <div style={{ fontSize: 11, color: "var(--red)", fontWeight: 600 }}>✗ Erros</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--red)" }}>{tent.erros}</div>
+                          <div style={{ fontSize: 11, color: "var(--red)", fontWeight: 700 }}>✗ Erros</div>
+                          <div style={{ fontSize: 18, fontWeight: 900, color: "var(--red)" }}>{tent.erros}</div>
                         </div>
                       </div>
 
-                      {tent.respostasIncorretas?.length > 0 && (
-                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--b2)" }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--t2)", marginBottom: 6 }}>
-                            Questões com erro:
-                          </div>
-                          <div style={{ fontSize: 11, color: "var(--t3)", display: "flex", flexDirection: "column", gap: 4 }}>
-                            {tent.respostasIncorretas.map((q, idx) => (
-                              <div key={idx}>• {q.questaoEnunciado?.substring(0, 60)}...</div>
-                            ))}
-                          </div>
+                      {/* Status do feedback + botão */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid var(--b2)" }}>
+                        <div style={{ fontSize: 11, color: fbEnviado ? "var(--green)" : "var(--t3)", fontWeight: 600 }}>
+                          {fbEnviado ? "✅ Feedback enviado ao aluno" : fb ? "📝 Rascunho salvo" : "⏳ Sem feedback ainda"}
                         </div>
-                      )}
+                        <button
+                          onClick={() => setFeedbackTentativaId(tent.id)}
+                          style={{
+                            padding: "6px 14px", borderRadius: 6, border: "none",
+                            background: fbEnviado ? "var(--green-d)" : "var(--blue-d)",
+                            color: fbEnviado ? "var(--green)" : "var(--blue)",
+                            fontSize: 12, fontWeight: 700, cursor: "pointer"
+                          }}
+                        >
+                          {fbEnviado ? "✏️ Editar Feedback" : "📋 Dar Feedback"}
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
               </div>
             )}
           </div>
+        )}
+
+        {feedbackTentativaId && (
+          <ModalFeedbackCoach
+            tentativaId={feedbackTentativaId}
+            coachId={coachId}
+            questoes={questoes}
+            onClose={() => { setFeedbackTentativaId(null); setTick(t => t+1); }}
+          />
         )}
 
         {adicionandoQuestao && (
@@ -6071,6 +6138,270 @@ function ModalAdicionarQuestao({ simuladoId, onClose }) {
 }
 
 // ============================================================
+// COACH: Modal de Feedback Pedagógico por Tentativa
+// ============================================================
+function ModalFeedbackCoach({ tentativaId, coachId, questoes, onClose }) {
+  const tentativa = tentativasModule.getById(tentativaId);
+  const fbExistente = feedbackModule.getByTentativa(tentativaId);
+  const aluno = tentativa ? usersModule.getById(tentativa.alunoId) : null;
+
+  // Inicializa comentários por questão
+  const initComents = () => questoes.map(q => {
+    const ex = fbExistente?.comentariosQuestoes?.find(c => c.questaoId === q.id);
+    const resp = tentativa?.respostas?.find(r => r.questaoId === q.id);
+    const acertou = resp?.resposta === q.gabarito;
+    return { questaoId: q.id, acertou, comentario: ex?.comentario || "", explicacao: ex?.explicacao || "" };
+  });
+
+  const [comentarios, setComentarios] = useState(initComents);
+  const [orientacoesGerais, setOrientacoesGerais] = useState(fbExistente?.orientacoesGerais || "");
+  const [sugestoesConteudo, setSugestoesConteudo] = useState(fbExistente?.sugestoesConteudo || "");
+  const [temasRevisar, setTemasRevisar] = useState(fbExistente?.temasRevisar || "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  if (!tentativa || !aluno) return null;
+
+  const total = questoes.length;
+  const acertos = tentativa.acertos || 0;
+  const pct = total > 0 ? Math.round((acertos / total) * 100) : 0;
+
+  function updateComentario(idx, field, val) {
+    setComentarios(prev => prev.map((c, i) => i === idx ? { ...c, [field]: val } : c));
+  }
+
+  function salvar(status) {
+    setSaving(true);
+    feedbackModule.salvar(coachId, tentativaId, {
+      comentariosQuestoes: comentarios,
+      orientacoesGerais, sugestoesConteudo, temasRevisar, status
+    });
+    setSaving(false);
+    setSaved(true);
+    if (status === "enviado") { setTimeout(onClose, 800); }
+    else { setTimeout(() => setSaved(false), 2000); }
+  }
+
+  const inp = { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--b2)", background: "var(--s3)", color: "var(--t1)", fontSize: 12, fontFamily: "inherit" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 2000, overflowY: "auto", padding: "20px 16px" }}>
+      <div style={{ background: "var(--s1)", borderRadius: 14, maxWidth: 660, width: "100%", padding: 28 }} onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 4 }}>Feedback Pedagógico</div>
+            <h2 style={{ fontSize: 18, fontWeight: 900, marginBottom: 2 }}>📋 {aluno.name}</h2>
+            <div style={{ fontSize: 12, color: "var(--t3)" }}>
+              {simuladosModule.getById(tentativa.simuladoId)?.nome} · {new Date(tentativa.finishedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "var(--b2)", color: "var(--t1)", fontSize: 12, cursor: "pointer" }}>Fechar</button>
+        </div>
+
+        {/* Resumo de desempenho */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 20, padding: 14, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--green)" }}>{acertos}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Acertos</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--red)" }}>{tentativa.erros || 0}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Erros</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: pct >= 60 ? "var(--green)" : "var(--red)" }}>{pct}%</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Aproveitamento</div>
+          </div>
+        </div>
+
+        {/* Comentarios por questao */}
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 12 }}>Analise por Questao</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
+          {questoes.map((q, i) => {
+            const c = comentarios[i] || {};
+            const resp = tentativa.respostas?.find(r => r.questaoId === q.id);
+            return (
+              <div key={q.id} style={{ padding: 14, borderRadius: 8, background: "var(--s2)", border: `1px solid ${c.acertou ? "rgba(34,211,165,0.25)" : "rgba(248,113,113,0.25)"}` }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{c.acertou ? "\u2705" : "\u274c"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: c.acertou ? "var(--green)" : "var(--red)", marginBottom: 4 }}>
+                      Questao {i + 1} \u2014 {c.acertou ? "ACERTOU" : "ERROU"}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--t1)", lineHeight: 1.5, marginBottom: 6 }}>{q.enunciado}</div>
+                    <div style={{ fontSize: 11, color: "var(--t3)" }}>
+                      Resposta: <strong style={{ color: "var(--t2)" }}>{resp?.resposta || "\u2014"}</strong>
+                      {!c.acertou && <> \u00b7 Gabarito: <strong style={{ color: "var(--green)" }}>{q.gabarito}</strong></>}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t3)", marginBottom: 4, textTransform: "uppercase" }}>Comentario</label>
+                    <textarea value={c.comentario || ""} onChange={e => updateComentario(i, "comentario", e.target.value)}
+                      placeholder="Observacao sobre esta questao..." style={{ ...inp, minHeight: 52, resize: "vertical" }} />
+                  </div>
+                  {!c.acertou && (
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t3)", marginBottom: 4, textTransform: "uppercase" }}>Explicacao do Erro</label>
+                      <textarea value={c.explicacao || ""} onChange={e => updateComentario(i, "explicacao", e.target.value)}
+                        placeholder="Explique por que a resposta esta errada e o raciocinio correto..." style={{ ...inp, minHeight: 52, resize: "vertical" }} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Orientacoes gerais */}
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 12 }}>Orientacoes Gerais</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t2)", marginBottom: 5, textTransform: "uppercase" }}>Orientacoes e Analise Geral</label>
+            <textarea value={orientacoesGerais} onChange={e => setOrientacoesGerais(e.target.value)}
+              placeholder="Analise geral do desempenho, pontos fortes, pontos a melhorar..."
+              style={{ ...inp, minHeight: 80, resize: "vertical" }} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t2)", marginBottom: 5, textTransform: "uppercase" }}>Sugestoes de Conteudo para Aprofundamento</label>
+            <textarea value={sugestoesConteudo} onChange={e => setSugestoesConteudo(e.target.value)}
+              placeholder="Indique materiais, livros, topicos ou videoaulas para estudo complementar..."
+              style={{ ...inp, minHeight: 60, resize: "vertical" }} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t2)", marginBottom: 5, textTransform: "uppercase" }}>Temas que Precisam de Revisao</label>
+            <textarea value={temasRevisar} onChange={e => setTemasRevisar(e.target.value)}
+              placeholder="Liste os temas com baixo desempenho que precisam ser revisados prioritariamente..."
+              style={{ ...inp, minHeight: 60, resize: "vertical" }} />
+          </div>
+        </div>
+
+        {saved && <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--green-d)", color: "var(--green)", fontSize: 12, fontWeight: 700, textAlign: "center", marginBottom: 12 }}>Salvo com sucesso!</div>}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => salvar("rascunho")} disabled={saving}
+            style={{ flex: 1, padding: "10px", borderRadius: 8, border: "1px solid var(--b2)", background: "transparent", color: "var(--t2)", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            Salvar Rascunho
+          </button>
+          <button onClick={() => salvar("enviado")} disabled={saving}
+            style={{ flex: 2, padding: "10px", borderRadius: 8, border: "none", background: "var(--green)", color: "#07080f", fontSize: 13, fontWeight: 900, cursor: "pointer" }}>
+            Enviar Feedback ao Aluno
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ALUNO: Modal para visualizar feedback recebido do coach
+// ============================================================
+function ModalVerFeedback({ tentativaId, onClose }) {
+  const tentativa = tentativasModule.getById(tentativaId);
+  const fb = feedbackModule.getEnviadoParaAluno(tentativaId);
+  if (!tentativa || !fb) return null;
+
+  const simulado = simuladosModule.getById(tentativa.simuladoId);
+  const questoes = questoesModule.getBySimulado(tentativa.simuladoId);
+  const total = questoes.length;
+  const pct = total > 0 ? Math.round((tentativa.acertos / total) * 100) : 0;
+  const coach = usersModule.getById(fb.coachId);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 2000, overflowY: "auto", padding: "20px 16px" }}>
+      <div style={{ background: "var(--s1)", borderRadius: 14, maxWidth: 660, width: "100%", padding: 28 }} onClick={e => e.stopPropagation()}>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--green)", marginBottom: 4 }}>Feedback do seu professor</div>
+            <h2 style={{ fontSize: 18, fontWeight: 900, marginBottom: 2 }}>{simulado?.nome}</h2>
+            <div style={{ fontSize: 12, color: "var(--t3)" }}>
+              Enviado por {coach?.name || "Coach"} \u00b7 {new Date(fb.enviadoEm).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "var(--b2)", color: "var(--t1)", fontSize: 12, cursor: "pointer" }}>Fechar</button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 20, padding: 14, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 24, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--green)" }}>{tentativa.acertos}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Acertos</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 24, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--red)" }}>{tentativa.erros}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Erros</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 24, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: pct >= 60 ? "var(--green)" : "var(--red)" }}>{pct}%</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Aproveitamento</div>
+          </div>
+        </div>
+
+        {fb.comentariosQuestoes?.some(c => c.comentario || c.explicacao) && (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 12 }}>Analise por Questao</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+              {fb.comentariosQuestoes.map((c, i) => {
+                const q = questoes.find(q => q.id === c.questaoId);
+                if (!q || (!c.comentario && !c.explicacao && c.acertou)) return null;
+                return (
+                  <div key={c.questaoId} style={{ padding: 14, borderRadius: 8, background: "var(--s2)", border: `1px solid ${c.acertou ? "rgba(34,211,165,0.2)" : "rgba(248,113,113,0.2)"}` }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 16 }}>{c.acertou ? "\u2705" : "\u274c"}</span>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: c.acertou ? "var(--green)" : "var(--red)" }}>
+                        Questao {i + 1} \u2014 {c.acertou ? "Correta" : "Incorreta"}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--t2)", marginBottom: 8, lineHeight: 1.5 }}>{q.enunciado}</div>
+                    {c.comentario && (
+                      <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--s3)", marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", marginBottom: 4 }}>Comentario do professor</div>
+                        <div style={{ fontSize: 12, color: "var(--t1)", lineHeight: 1.6 }}>{c.comentario}</div>
+                      </div>
+                    )}
+                    {c.explicacao && (
+                      <div style={{ padding: "8px 12px", borderRadius: 6, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)" }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--red)", textTransform: "uppercase", marginBottom: 4 }}>Explicacao do erro</div>
+                        <div style={{ fontSize: 12, color: "var(--t1)", lineHeight: 1.6 }}>{c.explicacao}</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {fb.orientacoesGerais && (
+          <div style={{ padding: 16, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Orientacoes Gerais</div>
+            <div style={{ fontSize: 13, color: "var(--t1)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{fb.orientacoesGerais}</div>
+          </div>
+        )}
+        {fb.temasRevisar && (
+          <div style={{ padding: 16, borderRadius: 10, background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.25)", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--amber)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Temas para Revisar</div>
+            <div style={{ fontSize: 13, color: "var(--t1)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{fb.temasRevisar}</div>
+          </div>
+        )}
+        {fb.sugestoesConteudo && (
+          <div style={{ padding: 16, borderRadius: 10, background: "var(--blue-d)", border: "1px solid rgba(96,165,250,0.25)", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Sugestoes de Conteudo</div>
+            <div style={{ fontSize: 13, color: "var(--t1)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{fb.sugestoesConteudo}</div>
+          </div>
+        )}
+
+        <button onClick={onClose} style={{ width: "100%", marginTop: 8, padding: "11px", borderRadius: 8, border: "none", background: "var(--green)", color: "#07080f", fontSize: 13, fontWeight: 900, cursor: "pointer" }}>
+          Fechar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // COACH: Ranking de Alunos
 // ============================================================
 function CoachRanking({ user }) {
@@ -6092,11 +6423,11 @@ function CoachRanking({ user }) {
   }).sort((a, b) => b.xp - a.xp || b.aulas - a.aulas);
 
   const posClass = (i) => i===0?"rank-1":i===1?"rank-2":i===2?"rank-3":"";
-  const posEmoji = (i) => i===0?"🥇":i===1?"🥈":i===2?"🥉":"";
+  const posEmoji = (i) => i===0?"\ud83e\udd47":i===1?"\ud83e\udd48":i===2?"\ud83e\udd49":"";
 
   return (
     <div>
-      <div className="ph"><div><h1>🏆 Ranking de Alunos</h1><p>Classificação por edital</p></div></div>
+      <div className="ph"><div><h1>Ranking de Alunos</h1><p>Classificacao por edital</p></div></div>
       {editais.length > 1 && (
         <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:20}}>
           {editais.map(e => (
@@ -6117,10 +6448,10 @@ function CoachRanking({ user }) {
                 <tr>
                   <th style={{width:50}}>#</th>
                   <th>Aluno</th>
-                  <th>Nível</th>
+                  <th>Nivel</th>
                   <th>XP</th>
                   <th>Aulas</th>
-                  <th>🔥 Streak</th>
+                  <th>Streak</th>
                   <th>Progresso</th>
                 </tr>
               </thead>
@@ -6168,7 +6499,6 @@ export default function App() {
   useEffect(() => {
     storage.load().then(() => {
       setDbLoaded(true);
-      // Restore session from localStorage
       try {
         const savedId = localStorage.getItem('estudaai_session');
         if (savedId) {
@@ -6193,7 +6523,7 @@ export default function App() {
       <style dangerouslySetInnerHTML={{ __html: css }} />
       <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"var(--bg)", flexDirection:"column", gap:"16px" }}>
         <div style={{ fontSize:"40px" }}>📚</div>
-        <div style={{ color:"var(--green)", fontFamily:"Cabinet Grotesk", fontWeight:900, fontSize:"22px", letterSpacing:"-0.5px" }}>EstudaAI</div>
+        <div style={{ color:"var(--green)", fontFamily:"Cabinet Grotesk", fontWeight:900, fontSize:"22px" }}>EstudaAI</div>
         <div style={{ color:"var(--t3)", fontSize:"13px" }}>Conectando ao banco de dados...</div>
       </div>
     </>
@@ -6215,15 +6545,15 @@ export default function App() {
       if (page==="debug")     return <AdminDebug/>;
     }
     if (user.role === "coach") {
-      if (page==="dashboard")      return <CoachDashboard user={user} refresh={refresh}/>;
-      if (page==="alunos")         return <CoachAlunos    user={user} refresh={refresh}/>;
-      if (page==="editais")        return <CoachEditais   user={user} refresh={refresh}/>;
+      if (page==="dashboard")       return <CoachDashboard user={user} refresh={refresh}/>;
+      if (page==="alunos")          return <CoachAlunos    user={user} refresh={refresh}/>;
+      if (page==="editais")         return <CoachEditais   user={user} refresh={refresh}/>;
       if (page==="gerenciar-plano") return <CoachGerenciarPlanos user={user} refresh={refresh}/>;
-      if (page==="progresso")      return <CoachProgresso user={user}/>;
-      if (page==="conteudo")       return <CoachConteudo user={user} refresh={refresh}/>;
-      if (page==="resumos")        return <CoachResumos user={user} refresh={refresh}/>;
-      if (page==="simulados")      return <CoachSimulados user={user} refresh={refresh}/>;
-      if (page==="ranking")        return <CoachRanking   user={user}/>;
+      if (page==="progresso")       return <CoachProgresso user={user}/>;
+      if (page==="conteudo")        return <CoachConteudo user={user} refresh={refresh}/>;
+      if (page==="resumos")         return <CoachResumos user={user} refresh={refresh}/>;
+      if (page==="simulados")       return <CoachSimulados user={user} refresh={refresh}/>;
+      if (page==="ranking")         return <CoachRanking   user={user}/>;
     }
     if (user.role === "aluno") {
       if (page==="dashboard") return <AlunoDashboard user={user} refresh={refresh} setPage={setPage}/>;
