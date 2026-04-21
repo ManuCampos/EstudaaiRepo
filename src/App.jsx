@@ -6889,11 +6889,11 @@ function CoachRanking({ user }) {
 // GERADOR DE PROMPT
 // ============================================================
 function GeradorDePrompt() {
-  const [tema, setTema] = React.useState("");
-  const [tipo, setTipo] = React.useState("avancado");
-  const [modelo, setModelo] = React.useState("resumo-estrategico");
-  const [promptGerado, setPromptGerado] = React.useState("");
-  const [copied, setCopied] = React.useState(false);
+  const [tema, setTema] = useState("");
+  const [tipo, setTipo] = useState("avancado");
+  const [modelo, setModelo] = useState("resumo-estrategico");
+  const [promptGerado, setPromptGerado] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const BASE = "Você é um professor especialista em concursos públicos de alto nível, com foco em provas de Tribunais de Contas, banca CESPE/Cebraspe, e especialista em didática para aprovação.";
 
