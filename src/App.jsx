@@ -1095,6 +1095,75 @@ planosModule.reagendarTopico = function(planoId, dateKey, topicoId) {
   });
 };
 
+// Importa uma aula já estudada: marca como concluída em data passada e adiciona revisões futuras
+planosModule.importarAulaJaEstudada = function(planoId, alunoId, topicId, completionDateKey, reviewIntervals) {
+  const plano = this.getById(planoId);
+  if (!plano) return;
+
+  // Busca o objeto do tópico no plano
+  let topicObj = null;
+  for (const day of Object.values(plano.plan)) {
+    const t = (day.topicos || []).find(t => t.id === topicId);
+    if (t) { topicObj = t; break; }
+  }
+  if (!topicObj) return;
+
+  const todayKey = localDateKey();
+  const progKey = `${completionDateKey}-${topicId}`;
+
+  // Marca como concluída com flag de importação manual
+  storage.set(db => {
+    const prog = db.progresso;
+    const idx = prog.findIndex(p => p.alunoId === alunoId && p.planoId === planoId && p.key === progKey);
+    if (idx >= 0) {
+      const updated = [...prog];
+      updated[idx] = { ...updated[idx], done: true, importado: true, importadoEm: new Date().toISOString() };
+      return { ...db, progresso: updated };
+    }
+    return { ...db, progresso: [...prog, { alunoId, planoId, key: progKey, done: true, importado: true, importadoEm: new Date().toISOString(), at: new Date().toISOString() }] };
+  });
+
+  // Remove a aula do plano futuro e reconstrói revisões
+  storage.set(db => {
+    const planos = db.planos.map(p => {
+      if (p.id !== planoId) return p;
+      const np = JSON.parse(JSON.stringify(p.plan));
+
+      // Remove a aula de todos os dias futuros (já está concluída)
+      Object.keys(np).forEach(dk => {
+        if (dk >= todayKey) {
+          np[dk].topicos = (np[dk].topicos || []).filter(t => t.id !== topicId);
+          // Remove revisões existentes para este tópico (serão recriadas abaixo)
+          if (reviewIntervals && reviewIntervals.length > 0) {
+            np[dk].reviews = (np[dk].reviews || []).filter(r => r.id !== topicId);
+          }
+        }
+      });
+
+      // Adiciona revisões futuras baseadas na data de conclusão
+      if (reviewIntervals && reviewIntervals.length > 0) {
+        const compD = new Date(completionDateKey + "T12:00:00");
+        reviewIntervals.forEach(interval => {
+          let revDate = new Date(compD);
+          revDate.setDate(revDate.getDate() + interval);
+          const revKey = localDateKey(revDate);
+          if (revKey < todayKey) return; // Revisões já passadas são ignoradas
+          if (!np[revKey]) np[revKey] = { date: revKey, topicos: [], reviews: [] };
+          if (!np[revKey].reviews.find(r => r.id === topicId && r.reviewInterval === interval)) {
+            np[revKey].reviews.push({ ...topicObj, reviewInterval: interval });
+          }
+        });
+      }
+
+      return { ...p, plan: np };
+    });
+    return { ...db, planos };
+  });
+
+  logModule.add(alunoId, `Aula importada manualmente: ${topicObj.name}`, { planoId, topicId, completionDateKey, reviewIntervals });
+  persistToSupabase();
+};
+
 // ============================================================
 // DESIGN SYSTEM
 // ============================================================
@@ -1633,6 +1702,12 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
   const [noteText, setNoteText] = useState("");
   const [tick, setTick] = useState(0);
   const [showMaterials, setShowMaterials] = useState(false);
+  // Fluxo "Aula Já Estudada"
+  const [jaEstudada, setJaEstudada] = useState(false);
+  const [jaEstudadaDate, setJaEstudadaDate] = useState("");
+  const [comRevisao, setComRevisao] = useState(null); // null | true | false
+  const [revisaoPreset, setRevisaoPreset] = useState("moderada");
+  const [customIntervals, setCustomIntervals] = useState("");
   const dayData = plano.plan[today] || { topicos:[], reviews:[] };
   // Combina aulas pendentes + revisões pendentes (aulas primeiro)
   const pendingLessons = (dayData.topicos || [])
@@ -1688,6 +1763,23 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
       planosModule.reagendarTopico(plano.id, today, currentTopic.id);
     }
     avanca(); onRefresh(); setTick(t=>t+1);
+  }
+  function handleImportarAula() {
+    if (!jaEstudadaDate) { alert("Informe a data em que você concluiu a aula."); return; }
+    if (comRevisao === null) { alert("Informe se deseja incluir no cronograma de revisão."); return; }
+    let intervals = null;
+    if (comRevisao) {
+      if (revisaoPreset === "personalizado") {
+        intervals = customIntervals.split(",").map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0);
+        if (intervals.length === 0) { alert("Informe pelo menos um intervalo válido (ex: 1, 7, 21)."); return; }
+      } else {
+        intervals = REVIEW_PRESETS[revisaoPreset] || [1, 7, 21, 30];
+      }
+    }
+    if (noteText.trim()) progressoModule.saveNote(user.id, plano.id, currentTopic.id, noteText.trim());
+    planosModule.importarAulaJaEstudada(plano.id, user.id, currentTopic.id, jaEstudadaDate, intervals);
+    setJaEstudada(false); setJaEstudadaDate(""); setComRevisao(null); setRevisaoPreset("moderada"); setCustomIntervals("");
+    setConcluidos(c=>c+1); avanca(); onRefresh(); setTick(t=>t+1);
   }
   const finished = idx >= pending.length;
   return (
@@ -1809,6 +1901,61 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
                 📎 {topicMaterials.length > 0 ? `Ver ${topicMaterials.length} material${topicMaterials.length !== 1 ? "is" : ""}` : "Sem materiais"}
               </button>
             </div>
+            {/* Aula Já Estudada */}
+            {currentTopic._type === "lesson" && (
+              <div style={{marginBottom:14,padding:"12px 14px",borderRadius:8,background:"var(--s2)",border:`1px solid ${jaEstudada?"var(--green)":"var(--b2)"}`,transition:"border-color .2s"}}>
+                <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                  <input type="checkbox" checked={jaEstudada} onChange={e=>{setJaEstudada(e.target.checked);if(!e.target.checked){setComRevisao(null);setJaEstudadaDate("");}}} style={{width:16,height:16,accentColor:"var(--green)",cursor:"pointer"}}/>
+                  <span style={{fontSize:13,fontWeight:700,color:jaEstudada?"var(--green)":"var(--t1)"}}>✅ Aula Já Estudada</span>
+                </label>
+                {jaEstudada && (
+                  <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:14}}>
+                    <div>
+                      <label style={{fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",color:"var(--t3)",display:"block",marginBottom:6}}>📅 Quando você concluiu esta aula?</label>
+                      <input type="date" className="inp" value={jaEstudadaDate} onChange={e=>setJaEstudadaDate(e.target.value)} max={today} style={{fontSize:13,padding:"8px 12px"}}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",color:"var(--t3)",display:"block",marginBottom:8}}>Incluir no cronograma de revisão?</label>
+                      <div style={{display:"flex",gap:8}}>
+                        {[{v:true,l:"✅ Sim"},{v:false,l:"❌ Não"}].map(({v,l})=>(
+                          <label key={String(v)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",padding:"8px 0",borderRadius:8,background:comRevisao===v?"var(--green-d)":"var(--s3)",border:`1px solid ${comRevisao===v?"var(--green)":"var(--b2)"}`,flex:1,justifyContent:"center",transition:"all .15s"}}>
+                            <input type="radio" name="comRevisao" checked={comRevisao===v} onChange={()=>setComRevisao(v)} style={{accentColor:"var(--green)"}}/>
+                            <span style={{fontSize:13,fontWeight:600}}>{l}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    {comRevisao===true && (
+                      <div>
+                        <label style={{fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",color:"var(--t3)",display:"block",marginBottom:8}}>Modelo de Revisão Espaçada</label>
+                        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                          {[
+                            {key:"baixa",     label:"Baixa",       desc:"3 revisões: 1, 14, 21 dias"},
+                            {key:"moderada",  label:"Moderada",    desc:"4 revisões: 1, 7, 21, 30 dias"},
+                            {key:"intensa",   label:"Intensa",     desc:"5 revisões: 1, 7, 14, 21, 30 dias"},
+                            {key:"personalizado",label:"Personalizado",desc:"Defina seus próprios intervalos"},
+                          ].map(({key,label,desc})=>(
+                            <label key={key} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 12px",borderRadius:8,background:revisaoPreset===key?"var(--blue-d)":"var(--s3)",border:`1px solid ${revisaoPreset===key?"var(--blue)":"var(--b2)"}`,transition:"all .15s"}}>
+                              <input type="radio" name="revisaoPreset" checked={revisaoPreset===key} onChange={()=>setRevisaoPreset(key)} style={{accentColor:"var(--blue)"}}/>
+                              <div>
+                                <div style={{fontSize:13,fontWeight:700}}>{label}</div>
+                                <div style={{fontSize:11,color:"var(--t3)"}}>{desc}</div>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                        {revisaoPreset==="personalizado" && (
+                          <div style={{marginTop:10}}>
+                            <label style={{fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",color:"var(--t3)",display:"block",marginBottom:6}}>Intervalos em dias (separados por vírgula)</label>
+                            <input type="text" className="inp" value={customIntervals} onChange={e=>setCustomIntervals(e.target.value)} placeholder="Ex: 1, 3, 7, 15, 30" style={{fontSize:13,padding:"8px 12px"}}/>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{marginBottom:16}}>
               <label style={{fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",color:currentTopic._type==="review"?"var(--amber)":"var(--t3)",display:"block",marginBottom:7}}>
                 {currentTopic._type === "review" ? "🔁 Suas Anotações (edite e complemente)" : "📝 Resumo / Anotações"}
@@ -1826,10 +1973,12 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
                 placeholder={currentTopic._type === "review" ? "Complemente suas anotações, adicione o que revisou hoje..." : "Escreva aqui o que você entendeu, pontos importantes, macetes..."}
               />
             </div>
-            <button className="btn-estudar" onClick={handleOk}>
-              {currentTopic._type === "review" ? "✅ Revisão concluída →" : "✅ Concluído — próximo →"}
+            <button className="btn-estudar" onClick={jaEstudada ? handleImportarAula : handleOk}>
+              {jaEstudada
+                ? "📥 Importar Aula Já Estudada"
+                : currentTopic._type === "review" ? "✅ Revisão concluída →" : "✅ Concluído — próximo →"}
             </button>
-            {currentTopic._type === "lesson" && (
+            {currentTopic._type === "lesson" && !jaEstudada && (
               <button className="btn-pular" onClick={handlePular}>📅 Pular e reagendar para depois</button>
             )}
           </>
