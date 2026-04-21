@@ -172,6 +172,7 @@ const defaultDB = {
   simulados: [],
   questoes: [],
   tentativas: [],
+  feedbackSimulado: [],
   resumoComments: [],
   resumoAdditions: [],
   materialFiles: [],
@@ -315,6 +316,24 @@ const REVIEW_PRESETS = {
 const REVIEW_PRESET_LABELS = { baixa: "Baixa", moderada: "Moderada", intensa: "Intensa" };
 const REVIEW_PRESET_DESCS  = { baixa: "3 revisões: 1, 14, 21d", moderada: "4 revisões: 1, 7, 21, 30d", intensa: "5 revisões: 1, 7, 14, 21, 30d" };
 
+// Feriados nacionais fixos brasileiros (MM-DD)
+const FERIADOS_FIXOS_BR = ["01-01","04-21","05-01","09-07","10-12","11-02","11-15","11-20","12-25"];
+function isFeriadoBR(date) {
+  const mm = String(date.getMonth()+1).padStart(2,"0");
+  const dd = String(date.getDate()).padStart(2,"0");
+  return FERIADOS_FIXOS_BR.includes(`${mm}-${dd}`);
+}
+// Avança para o próximo dia válido (estudo permitido e não feriado)
+function proximoDiaUtil(date, aulasNoDiaFn, maxDias=30) {
+  let d = new Date(date);
+  let safety = 0;
+  while ((aulasNoDiaFn(d.getDay()) === 0 || isFeriadoBR(d)) && safety < maxDias) {
+    d.setDate(d.getDate() + 1);
+    safety++;
+  }
+  return d;
+}
+
 const planosModule = {
   generate(alunoId, editalId, rotina) {
     const edital = editaisModule.getById(editalId);
@@ -379,13 +398,9 @@ const planosModule = {
           plan[key].topicos.push({ ...allTopicos[topicIdx] });
           const reviewIntervals = REVIEW_PRESETS[allTopicos[topicIdx].materiaReviewPreset || "moderada"] || REVIEW_INTERVALS;
           reviewIntervals.forEach(interval => {
-            // Move review to next study day if it falls on a day off
+            // Move review to next dia útil (sem feriado, sem dia sem aula)
             let revDate = new Date(d); revDate.setDate(revDate.getDate() + interval);
-            let safety = 0;
-            while (aulasNoDia(revDate.getDay()) === 0 && safety < 7) {
-              revDate.setDate(revDate.getDate() + 1);
-              safety++;
-            }
+            revDate = proximoDiaUtil(revDate, aulasNoDia);
             const revKey = localDateKey(revDate);
             if (!reviews[revKey]) reviews[revKey] = [];
             reviews[revKey].push({ ...allTopicos[topicIdx], reviewInterval: interval });
@@ -503,12 +518,25 @@ const progressoModule = {
   getStats(alunoId, planoId) {
     const plano = planosModule.getById(planoId);
     if (!plano) return null;
-    const totalAulas = Object.values(plano.plan).reduce((a, d) => a + d.topicos.length, 0);
-    const totalReviews = Object.values(plano.plan).reduce((a, d) => a + d.reviews.length, 0);
     const prog = storage.get().progresso.filter(p => p.alunoId === alunoId && p.planoId === planoId && p.done);
-    const aulasFeitas = prog.filter(p => !p.key.endsWith("-rev")).length;
+
+    // IDs únicos de tópicos (aulas) já concluídos — chave: "YYYY-MM-DD-{topicId}"
+    const doneTopicIdSet = new Set(
+      prog.filter(p => !p.key.endsWith("-rev")).map(p => p.key.substring(11))
+    );
+    const aulasFeitas = doneTopicIdSet.size;
+
+    // Tópicos no plano atual que ainda NÃO foram feitos.
+    // Após regenerarFuturo o plano só tem os restantes; após generate() tem todos.
+    // Em ambos os casos: total = feitas + ainda-no-plano-não-feitas.
+    const notDoneInPlan = Object.values(plano.plan)
+      .flatMap(d => d.topicos)
+      .filter(t => !doneTopicIdSet.has(t.id)).length;
+    const totalAulas = aulasFeitas + notDoneInPlan;
+
+    const totalReviews = Object.values(plano.plan).reduce((a, d) => a + d.reviews.length, 0);
     const reviewsFeitas = prog.filter(p => p.key.endsWith("-rev")).length;
-    const pct = totalAulas ? Math.round((aulasFeitas / totalAulas) * 100) : 0;
+    const pct = totalAulas ? Math.min(100, Math.round((aulasFeitas / totalAulas) * 100)) : 0;
     const aulasPorDia = plano.rotina?.aulasPorDia || 1;
     const diasRestantes = aulasFeitas < totalAulas ? Math.ceil((totalAulas - aulasFeitas) / aulasPorDia) : 0;
     const previsao = diasRestantes > 0
@@ -785,6 +813,52 @@ const tentativasModule = {
   }
 };
 
+// ============================================================
+// MODULE: feedbackSimulado (Coach → Aluno)
+// ============================================================
+const feedbackModule = {
+  // Salva ou atualiza rascunho de feedback
+  salvar(coachId, tentativaId, dados) {
+    storage.set(db => {
+      const feedbacks = db.feedbackSimulado || [];
+      const tentativa = (db.tentativas || []).find(t => t.id === tentativaId);
+      if (!tentativa) return db;
+      const idx = feedbacks.findIndex(f => f.tentativaId === tentativaId);
+      const feedback = {
+        id: idx >= 0 ? feedbacks[idx].id : `fb_${Math.random().toString(36).substr(2,9)}`,
+        tentativaId,
+        simuladoId: tentativa.simuladoId,
+        alunoId: tentativa.alunoId,
+        coachId,
+        comentariosQuestoes: dados.comentariosQuestoes || [],
+        orientacoesGerais: dados.orientacoesGerais || "",
+        sugestoesConteudo: dados.sugestoesConteudo || "",
+        temasRevisar: dados.temasRevisar || "",
+        status: dados.status || "rascunho",
+        criadoEm: idx >= 0 ? feedbacks[idx].criadoEm : new Date().toISOString(),
+        atualizadoEm: new Date().toISOString(),
+        enviadoEm: dados.status === "enviado" ? new Date().toISOString() : (idx >= 0 ? feedbacks[idx].enviadoEm : null),
+      };
+      return {
+        ...db,
+        feedbackSimulado: idx >= 0
+          ? feedbacks.map((f, i) => i === idx ? feedback : f)
+          : [...feedbacks, feedback]
+      };
+    });
+  },
+  getByTentativa(tentativaId) {
+    return (storage.get().feedbackSimulado || []).find(f => f.tentativaId === tentativaId) || null;
+  },
+  getByAluno(alunoId) {
+    return (storage.get().feedbackSimulado || []).filter(f => f.alunoId === alunoId && f.status === "enviado");
+  },
+  getEnviadoParaAluno(tentativaId) {
+    const fb = (storage.get().feedbackSimulado || []).find(f => f.tentativaId === tentativaId);
+    return fb?.status === "enviado" ? fb : null;
+  },
+};
+
 // Adiantar aulas: move N topics from future days to today
 planosModule.adiantarAulas = function(planoId, howMany) {
   const plano = this.getById(planoId);
@@ -882,8 +956,7 @@ planosModule.regenerarFuturo = function(planoId, alunoId, novaRotina) {
         const intervals = REVIEW_PRESETS[remaining[topicIdx].materiaReviewPreset || "moderada"] || REVIEW_INTERVALS;
         intervals.forEach(interval => {
           let revDate = new Date(d); revDate.setDate(revDate.getDate() + interval);
-          let safety = 0;
-          while (aulasNoDia(revDate.getDay()) === 0 && safety < 7) { revDate.setDate(revDate.getDate() + 1); safety++; }
+          revDate = proximoDiaUtil(revDate, aulasNoDia);
           const revKey = localDateKey(revDate);
           if (!reviews[revKey]) reviews[revKey] = [];
           reviews[revKey].push({ ...remaining[topicIdx], reviewInterval: interval });
@@ -912,10 +985,57 @@ planosModule.regenerarFuturo = function(planoId, alunoId, novaRotina) {
       }
     }
   }
+  // Reagenda revisões FUTURAS das aulas já concluídas (que sumiram ao regenerar o plano).
+  // Para cada aula feita, calcula os intervalos de revisão e adiciona ao plano
+  // apenas as datas que ainda não chegaram e ainda não foram feitas.
+  const topicMap = {};
+  allTopicos.forEach(t => { topicMap[t.id] = t; });
+  // Também inclui os tópicos que estavam no plano antigo mas não estão em allTopicos (edge case)
+  Object.values(plano.plan || {}).forEach(day =>
+    (day.topicos || []).forEach(t => { if (!topicMap[t.id]) topicMap[t.id] = t; })
+  );
+  const doneRevKeys = new Set(
+    (db.progresso || []).filter(p => p.planoId === planoId && p.done && p.key.endsWith('-rev')).map(p => p.key)
+  );
+  // Agrupa por topicId → data mais antiga de conclusão
+  const doneByTopic = {};
+  doneProgresso.forEach(p => {
+    const date = p.key.substring(0, 10);
+    const tid  = p.key.substring(11);
+    if (!doneByTopic[tid] || date < doneByTopic[tid]) doneByTopic[tid] = date;
+  });
+  Object.entries(doneByTopic).forEach(([topicId, completionDate]) => {
+    const topicObj = topicMap[topicId];
+    if (!topicObj) return;
+    const intervals = REVIEW_PRESETS[topicObj.materiaReviewPreset || "moderada"] || [1, 7, 21, 30];
+    const compD = new Date(completionDate + "T12:00:00");
+    intervals.forEach(interval => {
+      let revDate = new Date(compD);
+      revDate.setDate(revDate.getDate() + interval);
+      revDate = proximoDiaUtil(revDate, aulasNoDia);
+      const revKey = localDateKey(revDate);
+      if (revKey < todayKey) return; // já passou
+      // Verifica se a revisão já foi feita pelo aluno
+      const progressoRevKey = `${revKey}-${topicId}-rev`;
+      if (doneRevKeys.has(progressoRevKey)) return; // já concluída
+      if (!plan[revKey]) plan[revKey] = { date: revKey, topicos: [], reviews: [] };
+      // Evita duplicata
+      if (!plan[revKey].reviews.find(r => r.id === topicId && r.reviewInterval === interval)) {
+        plan[revKey].reviews.push({ ...topicObj, reviewInterval: interval });
+      }
+    });
+  });
+
+  // Preserva os dias passados para que o histórico de semanas anteriores continue visível
+  const pastPlan = {};
+  Object.entries(plano.plan || {}).forEach(([key, day]) => {
+    if (key < todayKey) pastPlan[key] = day;
+  });
+  const fullPlan = { ...pastPlan, ...plan };
   // Update existing plan in-place (keep planoId and progress)
   storage.set(db => ({
     ...db,
-    planos: db.planos.map(p => p.id === planoId ? { ...p, rotina, plan } : p),
+    planos: db.planos.map(p => p.id === planoId ? { ...p, rotina, plan: fullPlan } : p),
   }));
   return this.getById(planoId);
 };
@@ -1514,7 +1634,14 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
   const [tick, setTick] = useState(0);
   const [showMaterials, setShowMaterials] = useState(false);
   const dayData = plano.plan[today] || { topicos:[], reviews:[] };
-  const pending = dayData.topicos.filter(t => !progressoModule.isDone(user.id, plano.id, `${today}-${t.id}`));
+  // Combina aulas pendentes + revisões pendentes (aulas primeiro)
+  const pendingLessons = (dayData.topicos || [])
+    .filter(t => !progressoModule.isDone(user.id, plano.id, `${today}-${t.id}`))
+    .map(t => ({ ...t, _type: "lesson" }));
+  const pendingReviews = (dayData.reviews || [])
+    .filter(t => !progressoModule.isDone(user.id, plano.id, `${today}-${t.id}-rev`))
+    .map(t => ({ ...t, _type: "review" }));
+  const pending = [...pendingLessons, ...pendingReviews];
   const xpGanho = concluidos * 10;
   const currentTopic = pending[idx];
 
@@ -1539,7 +1666,7 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
 
   const topicMaterials = currentTopic ? getMaterialFiles(currentTopic.id) : [];
 
-  // Load note whenever topic changes
+  // Carrega nota sempre que o tópico muda
   useEffect(() => {
     if (currentTopic) {
       setNoteText(progressoModule.getNote(user.id, plano.id, currentTopic.id));
@@ -1549,12 +1676,17 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
   function avanca() { if (idx+1 >= pending.length) setIdx(pending.length); else setIdx(i=>i+1); }
   function handleOk() {
     if (noteText.trim()) progressoModule.saveNote(user.id, plano.id, currentTopic.id, noteText.trim());
-    progressoModule.toggle(user.id, plano.id, `${today}-${currentTopic.id}`);
+    const progKey = currentTopic._type === "review"
+      ? `${today}-${currentTopic.id}-rev`
+      : `${today}-${currentTopic.id}`;
+    progressoModule.toggle(user.id, plano.id, progKey);
     setConcluidos(c=>c+1); avanca(); onRefresh(); setTick(t=>t+1);
   }
   function handlePular() {
     if (noteText.trim()) progressoModule.saveNote(user.id, plano.id, currentTopic.id, noteText.trim());
-    planosModule.reagendarTopico(plano.id, today, currentTopic.id);
+    if (currentTopic._type === "lesson") {
+      planosModule.reagendarTopico(plano.id, today, currentTopic.id);
+    }
     avanca(); onRefresh(); setTick(t=>t+1);
   }
   const finished = idx >= pending.length;
@@ -1616,7 +1748,9 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
             <div style={{fontSize:56,marginBottom:12}}>{pending.length===0?"😎":"🎉"}</div>
             <h2 style={{fontSize:22,fontWeight:900,marginBottom:8}}>{pending.length===0?"Tudo feito hoje!":"Sessão concluída!"}</h2>
             <p style={{color:"var(--t2)",marginBottom:20}}>
-              {pending.length===0?"Você já completou todas as aulas de hoje.":"Você completou "+concluidos+" aula"+(concluidos!==1?"s":"")+" nessa sessão."}
+              {pending.length===0
+                ? "Você já completou todas as aulas e revisões de hoje."
+                : `Você completou ${concluidos} item${concluidos!==1?"s":""} nessa sessão.`}
             </p>
             {xpGanho>0&&<div className="badge bg" style={{fontSize:13,padding:"7px 16px",marginBottom:20}}>+{xpGanho} XP ganho! 🔥</div>}
             <button className="btn btn-green" style={{width:"100%"}} onClick={onClose}>Fechar</button>
@@ -1625,8 +1759,15 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
           <>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
               <div>
-                <div style={{fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"var(--t3)"}}>Aula {idx+1} de {pending.length}</div>
-                <h2 style={{fontSize:18,fontWeight:900}}>▶ Estudar Agora</h2>
+                <div style={{fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"var(--t3)"}}>
+                  {currentTopic._type === "review" ? `Revisão ${idx - pendingLessons.length + 1} de ${pendingReviews.length}` : `Aula ${idx+1} de ${pendingLessons.length}`}
+                  {pendingReviews.length > 0 && pendingLessons.length > 0 && (
+                    <span style={{marginLeft:8,color:"var(--amber)"}}>• {pendingReviews.length} revisão{pendingReviews.length!==1?"ões":""} pendente{pendingReviews.length!==1?"s":""}</span>
+                  )}
+                </div>
+                <h2 style={{fontSize:18,fontWeight:900}}>
+                  {currentTopic._type === "review" ? "🔁 Revisão" : "▶ Estudar Agora"}
+                </h2>
               </div>
               <button className="modal-x" onClick={onClose}>✕</button>
             </div>
@@ -1669,17 +1810,28 @@ function EstudarAgoraModal({ user, plano, onClose, onRefresh }) {
               </button>
             </div>
             <div style={{marginBottom:16}}>
-              <label style={{fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",color:"var(--t3)",display:"block",marginBottom:7}}>📝 Resumo / Anotações</label>
+              <label style={{fontSize:11,fontWeight:700,letterSpacing:.6,textTransform:"uppercase",color:currentTopic._type==="review"?"var(--amber)":"var(--t3)",display:"block",marginBottom:7}}>
+                {currentTopic._type === "review" ? "🔁 Suas Anotações (edite e complemente)" : "📝 Resumo / Anotações"}
+              </label>
+              {currentTopic._type === "review" && !noteText && (
+                <div style={{marginBottom:8,padding:"8px 12px",borderRadius:6,background:"var(--amber-d)",border:"1px solid rgba(251,191,36,0.3)",fontSize:12,color:"var(--amber)"}}>
+                  Nenhuma anotação anterior. Aproveite para registrar o que relembrou!
+                </div>
+              )}
               <textarea
                 className="inp"
-                style={{minHeight:90,resize:"vertical",fontFamily:"inherit",fontSize:13,lineHeight:1.6}}
+                style={{minHeight:currentTopic._type==="review"?120:90,resize:"vertical",fontFamily:"inherit",fontSize:13,lineHeight:1.6,borderColor:currentTopic._type==="review"?"rgba(251,191,36,0.4)":"var(--b2)"}}
                 value={noteText}
                 onChange={e=>setNoteText(e.target.value)}
-                placeholder="Escreva aqui o que você entendeu, pontos importantes, macetes..."
+                placeholder={currentTopic._type === "review" ? "Complemente suas anotações, adicione o que revisou hoje..." : "Escreva aqui o que você entendeu, pontos importantes, macetes..."}
               />
             </div>
-            <button className="btn-estudar" onClick={handleOk}>✅ Concluído — próximo →</button>
-            <button className="btn-pular" onClick={handlePular}>📅 Pular e reagendar para depois</button>
+            <button className="btn-estudar" onClick={handleOk}>
+              {currentTopic._type === "review" ? "✅ Revisão concluída →" : "✅ Concluído — próximo →"}
+            </button>
+            {currentTopic._type === "lesson" && (
+              <button className="btn-pular" onClick={handlePular}>📅 Pular e reagendar para depois</button>
+            )}
           </>
         )}
       </div>
@@ -2492,11 +2644,14 @@ function CoachEditais({ user, refresh }) {
 function CoachProgresso({ user }) {
   const alunos = usersModule.getAlunos(user.id);
   const planos = storage.get().planos;
+  const db = storage.get();
   return (
     <div>
       <div className="ph"><div><h1>Progresso dos Alunos</h1></div></div>
       {alunos.length===0?<div className="card"><div className="empty"><h3>Nenhum aluno</h3></div></div>:alunos.map(a=>{
         const ap=planos.filter(p=>p.alunoId===a.id);
+        // Simulados finalizados pelo aluno
+        const tentativasAluno = (db.tentativas||[]).filter(t=>t.alunoId===a.id && t.status==="finalizada");
         return (
           <div className="sec-card mb4" key={a.id}>
             <div className="sec-hd"><div className="fw7 fh" style={{fontSize:15}}>{a.name}</div><span className="badge bb">{a.email}</span></div>
@@ -2517,6 +2672,40 @@ function CoachProgresso({ user }) {
                   </div>
                 );
               })}
+
+              {/* Histórico de Simulados do Aluno */}
+              {tentativasAluno.length > 0 && (
+                <div style={{marginTop:12}}>
+                  <div style={{fontSize:11,fontWeight:700,letterSpacing:1,textTransform:"uppercase",color:"var(--t3)",marginBottom:10}}>📝 Simulados Realizados</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {tentativasAluno.map(tent=>{
+                      const sim = (db.simulados||[]).find(s=>s.id===tent.simuladoId);
+                      const total = (db.questoes||[]).filter(q=>q.simuladoId===tent.simuladoId).length;
+                      const pct = total > 0 ? Math.round((tent.acertos/total)*100) : 0;
+                      const minutos = Math.floor((tent.tempoDecorridoSegundos||0)/60);
+                      const segundos = (tent.tempoDecorridoSegundos||0)%60;
+                      return (
+                        <div key={tent.id} style={{padding:"10px 14px",borderRadius:8,background:"var(--s3)",border:"1px solid var(--b1)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                          <div>
+                            <div style={{fontSize:13,fontWeight:600,color:"var(--t1)",marginBottom:2}}>{sim?.nome||"Simulado"}</div>
+                            <div style={{fontSize:11,color:"var(--t3)"}}>
+                              {new Date(tent.finishedAt).toLocaleDateString("pt-BR",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}
+                              {tent.tempoDecorridoSegundos ? ` • ⏱️ ${minutos}m ${segundos}s` : ""}
+                            </div>
+                          </div>
+                          <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                            <div style={{textAlign:"center"}}>
+                              <div style={{fontSize:18,fontWeight:900,color:pct>=60?"var(--green)":"var(--red)",fontFamily:"Cabinet Grotesk"}}>{tent.acertos}/{total}</div>
+                              <div style={{fontSize:10,color:"var(--t3)"}}>acertos</div>
+                            </div>
+                            <span className={`badge ${pct>=60?"bg":"br"}`}>{pct}%</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -2963,9 +3152,46 @@ function CoachPlanoTabela({ aluno, plano, setModalAula }) {
   );
 }
 
+// Constrói mapa topicId → { name, materiaName, materiaColor } a partir do edital
+function buildTopicMap(edital) {
+  const map = {};
+  if (!edital) return map;
+  for (const m of (edital.materias || [])) {
+    for (const t of (m.topicos || [])) {
+      map[t.id] = { name: t.name, materiaName: m.name, materiaColor: m.color };
+    }
+  }
+  return map;
+}
+
 // Componente: Vista em cronograma
 function CoachPlanoCronograma({ aluno, plano, setModalAula }) {
-  const sorted = Object.keys(plano.plan || {}).sort();
+  const edital = editaisModule.getById(plano.editalId);
+  const topicMap = buildTopicMap(edital);
+
+  // Dias do plano atual
+  const planDays = { ...(plano.plan || {}) };
+
+  // Reconstrói dias históricos a partir do progresso (datas que não estão no plano)
+  const todayKey = localDateKey();
+  const prog = storage.get().progresso.filter(
+    p => p.alunoId === aluno.id && p.planoId === plano.id && p.done && !p.key.endsWith("-rev")
+  );
+  prog.forEach(p => {
+    const date = p.key.substring(0, 10);
+    const topicId = p.key.substring(11);
+    if (date >= todayKey) return; // só datas passadas
+    if (!planDays[date]) {
+      planDays[date] = { date, topicos: [], reviews: [], _history: true };
+    }
+    // Adiciona o tópico ao dia histórico se ainda não estiver lá
+    if (!planDays[date].topicos.find(t => t.id === topicId)) {
+      const info = topicMap[topicId] || { name: topicId, materiaName: "", materiaColor: "#6b7280" };
+      planDays[date].topicos.push({ id: topicId, ...info });
+    }
+  });
+
+  const sorted = Object.keys(planDays).sort();
   let weekStart = null;
   const semanas = [];
 
@@ -2981,7 +3207,7 @@ function CoachPlanoCronograma({ aluno, plano, setModalAula }) {
       semanas.push({ start: wKey, end: localDateKey(wEnd), dias: {} });
     }
     const currentWeek = semanas[semanas.length - 1];
-    if (!currentWeek.dias[date]) currentWeek.dias[date] = plano.plan[date];
+    if (!currentWeek.dias[date]) currentWeek.dias[date] = planDays[date];
   });
 
   return (
@@ -3163,6 +3389,26 @@ function AlunoPlano({ user, refresh }) {
   const weekDays=getWeekDays(weekOffset);
   const wLabel=`${new Date(weekDays[0]+"T00:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"})} – ${new Date(weekDays[6]+"T00:00:00").toLocaleDateString("pt-BR",{day:"2-digit",month:"short"})}`;
 
+  // Mapa topicId → info (para reconstruir histórico de dias não presentes no plano)
+  const _editalForHistory = plano ? editaisModule.getById(plano.editalId) : null;
+  const _topicMapHistory  = buildTopicMap(_editalForHistory);
+  const _todayKey = localDateKey(today);
+  function getDayData(dk) {
+    if (plano?.plan?.[dk]) return plano.plan[dk];
+    // Reconstrói dia histórico a partir do progresso (só datas passadas)
+    if (!plano || dk >= _todayKey) return { topicos: [], reviews: [] };
+    const doneProg = storage.get().progresso.filter(
+      p => p.alunoId === user.id && p.planoId === plano.id && p.done && p.key.startsWith(dk + "-") && !p.key.endsWith("-rev")
+    );
+    if (doneProg.length === 0) return { topicos: [], reviews: [] };
+    const topicos = doneProg.map(p => {
+      const tid = p.key.substring(11);
+      const info = _topicMapHistory[tid] || { name: tid, materiaName: "", materiaColor: "#6b7280" };
+      return { id: tid, ...info };
+    });
+    return { topicos, reviews: [], _history: true };
+  }
+
   if (!plano) return (
     <div>
       <div className="ph"><div><h1>Meu Plano</h1><p>Gere seu plano personalizado</p></div></div>
@@ -3297,7 +3543,8 @@ function AlunoPlano({ user, refresh }) {
         {weekOffset!==0&&<button className="btn btn-ghost btn-sm" onClick={()=>setWeekOffset(0)}>Hoje</button>}
       </div>
       {weekDays.map(dk=>{
-        const d=plano.plan[dk]||{topicos:[],reviews:[]};
+        const d=getDayData(dk);
+        const isHistory=d._history===true;
         const date=new Date(dk+"T00:00:00");
         const isToday=dk===localDateKey(today);
         return (
@@ -3306,8 +3553,9 @@ function AlunoPlano({ user, refresh }) {
               <div><div style={{fontFamily:"Cabinet Grotesk",fontWeight:700,fontSize:14}}>{DAYS_FULL[date.getDay()]}</div><div className="text-xs text-dim">{date.toLocaleDateString("pt-BR")}</div></div>
               {isToday&&<span className="badge bg">Hoje</span>}
             </div>
+            {isHistory&&<div style={{fontSize:10,color:"var(--green)",fontWeight:700,marginBottom:8,letterSpacing:.5}}>✅ CONCLUÍDO</div>}
             {d.topicos.length===0&&d.reviews.length===0&&<p className="text-sm text-muted">Nenhum conteúdo</p>}
-            {d.topicos.length>0&&<div className="mb3">{d.topicos.map((t,i)=>{const key=`${dk}-${t.id}`;const done=progressoModule.isDone(user.id,plano.id,key);const material=getTopicMaterial(t.id);return(<div key={i} className={`topic-row ${done?"done":""}`}><div className="dot-c" style={{background:t.materiaColor}}/><span className="tr-name">{t.name}</span>{(t.materialUrl||material)&&<button onClick={()=>setShowPdfModal(t.id)} className="mat-link" style={{background:"none",border:"none",cursor:"pointer",padding:"0 4px",fontSize:11,color:"var(--blue)"}}>📎</button>}<span className="tr-tag">{t.materiaName}</span><button className={`ck-btn ${done?"ck":""}`} onClick={()=>toggle(key)}>{done&&<CheckIcon/>}</button></div>);})}</div>}
+            {d.topicos.length>0&&<div className="mb3">{d.topicos.map((t,i)=>{const key=`${dk}-${t.id}`;const done=progressoModule.isDone(user.id,plano.id,key)||isHistory;const material=getTopicMaterial(t.id);return(<div key={i} className={`topic-row ${done?"done":""}`}><div className="dot-c" style={{background:t.materiaColor}}/><span className="tr-name">{t.name}</span>{(t.materialUrl||material)&&<button onClick={()=>setShowPdfModal(t.id)} className="mat-link" style={{background:"none",border:"none",cursor:"pointer",padding:"0 4px",fontSize:11,color:"var(--blue)"}}>📎</button>}<span className="tr-tag">{t.materiaName}</span>{!isHistory&&<button className={`ck-btn ${done?"ck":""}`} onClick={()=>toggle(key)}>{done&&<CheckIcon/>}</button>}{isHistory&&<CheckIcon/>}</div>);})}</div>}
             {isToday&&allTodayDone&&<button className="adiantar-btn" onClick={()=>setShowAdiantar(true)}>⚡ Adiantar aulas de amanhã</button>}
             {d.reviews.length>0&&<div className="rev-sec"><div className="rev-lbl">Revisões</div>{d.reviews.map((r,i)=>{const key=`${dk}-${r.id}-rev`;const done=progressoModule.isDone(user.id,plano.id,key);const nota=progressoModule.getNote(user.id,plano.id,r.id);const isOpen=expandedNote===`${dk}-${r.id}`;return(<div key={i}><div className={`topic-row ${done?"done":""}`}><div className="dot-c" style={{background:r.materiaColor}}/><span className="tr-name">{r.name}</span><span className="tr-tag">🕐 {r.reviewInterval}d</span>{nota&&<button onClick={()=>setExpandedNote(isOpen?null:`${dk}-${r.id}`)} style={{background:"none",border:"none",cursor:"pointer",fontSize:12,color:isOpen?"var(--amber)":"var(--t3)",padding:"0 4px",flexShrink:0}} title="Ver anotações">📝</button>}<button className={`ck-btn ${done?"ck":""}`} onClick={()=>toggle(key)}>{done&&<CheckIcon/>}</button></div>{isOpen&&nota&&<div style={{margin:"6px 0 8px 24px",padding:"10px 13px",background:"var(--s2)",borderRadius:9,borderLeft:"3px solid var(--amber)",fontSize:12,color:"var(--t2)",lineHeight:1.6,whiteSpace:"pre-wrap"}}>{nota}</div>}</div>);})}</div>}
           </div>
@@ -3639,12 +3887,14 @@ function AdminDebug() {
   function statsUpTo(key) {
     if (!plano) return null;
     const prog = storage.get().progresso.filter(p => p.alunoId === selectedAluno && p.planoId === plano.id && p.done);
-    const totalAulas = Object.values(plano.plan).reduce((a,d) => a+d.topicos.length, 0);
-    const aulasFeitas = prog.filter(p => {
-      const dk = p.key.split("-").slice(0,3).join("-");
-      return dk <= key && !p.key.endsWith("-rev");
-    }).length;
-    const pct = totalAulas ? Math.round((aulasFeitas/totalAulas)*100) : 0;
+    const doneIds = new Set(
+      prog.filter(p => { const dk = p.key.split("-").slice(0,3).join("-"); return dk <= key && !p.key.endsWith("-rev"); })
+          .map(p => p.key.substring(11))
+    );
+    const aulasFeitas = doneIds.size;
+    const notDoneInPlan = Object.values(plano.plan).flatMap(d => d.topicos).filter(t => !doneIds.has(t.id)).length;
+    const totalAulas = aulasFeitas + notDoneInPlan;
+    const pct = totalAulas ? Math.min(100, Math.round((aulasFeitas/totalAulas)*100)) : 0;
     return { totalAulas, aulasFeitas, pct };
   }
 
@@ -3798,6 +4048,7 @@ function AlunoSimulados({ user, refresh }) {
   const editais = editaisModule.getByAluno(user.id);
   const [editalId, setEditalId] = useState(editais[0]?.id || "");
   const [resolvendo, setResolvendo] = useState(null);
+  const [verFeedback, setVerFeedback] = useState(null); // tentativaId
 
   const edital = editaisModule.getById(editalId);
   const simulados = edital ? simuladosModule.getByEdital(editalId) : [];
@@ -3843,6 +4094,8 @@ function AlunoSimulados({ user, refresh }) {
             const tentativas = tentativasModule.getBySimuladoAluno(sim.id, user.id);
             const finalizadas = tentativas.filter(t => t.status === "finalizada");
             const emAndamento = tentativas.find(t => t.status === "em_andamento");
+            // Verifica se alguma tentativa tem feedback enviado
+            const tentativaComFeedback = finalizadas.find(t => feedbackModule.getEnviadoParaAluno(t.id));
 
             return (
               <div
@@ -3851,23 +4104,26 @@ function AlunoSimulados({ user, refresh }) {
                   padding: 16,
                   borderRadius: 8,
                   background: "var(--s2)",
-                  border: "1px solid var(--b2)",
+                  border: tentativaComFeedback ? "1px solid rgba(34,211,165,0.35)" : "1px solid var(--b2)",
                   display: "flex",
                   flexDirection: "column",
                   gap: 12
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--t1)", marginBottom: 4 }}>
-                    {sim.nome}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--t1)" }}>{sim.nome}</div>
+                    {tentativaComFeedback && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 10, background: "var(--green-d)", color: "var(--green)", border: "1px solid rgba(34,211,165,0.3)" }}>
+                        📨 Feedback disponível
+                      </span>
+                    )}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, color: "var(--t3)", marginBottom: 6 }}>
                     {sim.tipo === "geral" ? "Simulado Geral" : "Simulado Específico"}
                   </div>
                   {sim.descricao && (
-                    <div style={{ fontSize: 12, color: "var(--t2)", marginBottom: 8 }}>
-                      {sim.descricao}
-                    </div>
+                    <div style={{ fontSize: 12, color: "var(--t2)", marginBottom: 6 }}>{sim.descricao}</div>
                   )}
                 </div>
 
@@ -3880,20 +4136,26 @@ function AlunoSimulados({ user, refresh }) {
                   )}
                 </div>
 
-                <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
+                <div style={{ display: "flex", gap: 8, marginTop: "auto", flexWrap: "wrap" }}>
+                  {tentativaComFeedback && (
+                    <button
+                      onClick={() => setVerFeedback(tentativaComFeedback.id)}
+                      style={{
+                        flex: 1, minWidth: 120,
+                        padding: "8px 12px", borderRadius: 6, border: "none",
+                        background: "var(--green)", color: "#07080f",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer"
+                      }}
+                    >
+                      📨 Ver Feedback
+                    </button>
+                  )}
                   {emAndamento ? (
                     <button
                       onClick={() => setResolvendo(emAndamento.id)}
                       style={{
-                        flex: 1,
-                        padding: "8px 12px",
-                        borderRadius: 6,
-                        border: "none",
-                        background: "var(--amber)",
-                        color: "white",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: "pointer"
+                        flex: 1, padding: "8px 12px", borderRadius: 6, border: "none",
+                        background: "var(--amber)", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer"
                       }}
                     >
                       Continuar
@@ -3905,18 +4167,11 @@ function AlunoSimulados({ user, refresh }) {
                         setResolvendo(nova.id);
                       }}
                       style={{
-                        flex: 1,
-                        padding: "8px 12px",
-                        borderRadius: 6,
-                        border: "none",
-                        background: "var(--blue)",
-                        color: "white",
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: "pointer"
+                        flex: 1, padding: "8px 12px", borderRadius: 6, border: "none",
+                        background: "var(--blue)", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer"
                       }}
                     >
-                      Resolver
+                      {finalizadas.length > 0 ? "Resolver novamente" : "Resolver"}
                     </button>
                   )}
                 </div>
@@ -3928,6 +4183,9 @@ function AlunoSimulados({ user, refresh }) {
 
       {resolvendo && (
         <ResolverSimulado tentativaId={resolvendo} onVoltar={() => { setResolvendo(null); refresh?.(); }} />
+      )}
+      {verFeedback && (
+        <ModalVerFeedback tentativaId={verFeedback} onClose={() => setVerFeedback(null)} />
       )}
     </div>
   );
@@ -5480,7 +5738,10 @@ function ModalGerenciarSimulado({ simuladoId, coachId, onClose }) {
   const simulado = simuladosModule.getById(simuladoId);
   const questoes = questoesModule.getBySimulado(simuladoId);
   const [adicionandoQuestao, setAdicionandoQuestao] = useState(false);
-  const [tab, setTab] = useState("questoes"); // "questoes" ou "resultados"
+  const [tab, setTab] = useState("questoes"); // "questoes" | "resultados"
+  const [feedbackTentativaId, setFeedbackTentativaId] = useState(null);
+  const [relatorioTentativaId, setRelatorioTentativaId] = useState(null);
+  const [tick, setTick] = useState(0);
   const tentativas = (storage.get().tentativas || []).filter(t => t.simuladoId === simuladoId && t.status === "finalizada");
   const alunos = usersModule.getAlunos(coachId);
 
@@ -5643,67 +5904,98 @@ function ModalGerenciarSimulado({ simuladoId, coachId, onClose }) {
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {tentativas.map(tent => {
                   const aluno = alunos.find(a => a.id === tent.alunoId);
-                  const minutos = Math.floor(tent.tempoDecorridoSegundos / 60);
-                  const segundos = tent.tempoDecorridoSegundos % 60;
+                  const minutos = Math.floor((tent.tempoDecorridoSegundos||0) / 60);
+                  const segundos = (tent.tempoDecorridoSegundos||0) % 60;
+                  const fb = feedbackModule.getByTentativa(tent.id);
+                  const fbEnviado = fb?.status === "enviado";
+                  const pct = questoes.length > 0 ? Math.round((tent.acertos / questoes.length) * 100) : 0;
 
                   return (
-                    <div
-                      key={tent.id}
-                      style={{
-                        padding: 14,
-                        borderRadius: 8,
-                        background: "var(--s2)",
-                        border: "1px solid var(--b2)"
-                      }}
-                    >
+                    <div key={tent.id} style={{ padding: 14, borderRadius: 8, background: "var(--s2)", border: `1px solid ${fbEnviado ? "rgba(34,211,165,0.3)" : "var(--b2)"}` }}>
+                      {/* Cabeçalho */}
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t1)", marginBottom: 4 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--t1)", marginBottom: 2 }}>
                             {aluno?.name || "Aluno"}
                           </div>
                           <div style={{ fontSize: 11, color: "var(--t3)" }}>
-                            {new Date(tent.finishedAt).toLocaleDateString("pt-BR", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                            {new Date(tent.finishedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                            {tent.tempoDecorridoSegundos ? ` · ⏱️ ${minutos}m ${segundos}s` : ""}
                           </div>
                         </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 18, fontWeight: 700, color: tent.acertos >= tent.erros ? "var(--green)" : "var(--red)", marginBottom: 4 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                          <div style={{ fontSize: 20, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: pct >= 60 ? "var(--green)" : "var(--red)" }}>
                             {tent.acertos}/{questoes.length}
                           </div>
-                          <div style={{ fontSize: 11, color: "var(--t3)" }}>
-                            ⏱️ {minutos}m {segundos}s
-                          </div>
+                          <span className={`badge ${pct >= 60 ? "bg" : "br"}`}>{pct}%</span>
                         </div>
                       </div>
 
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                      {/* Grid acertos/erros */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                         <div style={{ padding: 8, borderRadius: 6, background: "var(--s3)", textAlign: "center" }}>
-                          <div style={{ fontSize: 11, color: "var(--green)", fontWeight: 600 }}>✓ Acertos</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--green)" }}>{tent.acertos}</div>
+                          <div style={{ fontSize: 11, color: "var(--green)", fontWeight: 700 }}>✓ Acertos</div>
+                          <div style={{ fontSize: 18, fontWeight: 900, color: "var(--green)" }}>{tent.acertos}</div>
                         </div>
                         <div style={{ padding: 8, borderRadius: 6, background: "var(--s3)", textAlign: "center" }}>
-                          <div style={{ fontSize: 11, color: "var(--red)", fontWeight: 600 }}>✗ Erros</div>
-                          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--red)" }}>{tent.erros}</div>
+                          <div style={{ fontSize: 11, color: "var(--red)", fontWeight: 700 }}>✗ Erros</div>
+                          <div style={{ fontSize: 18, fontWeight: 900, color: "var(--red)" }}>{tent.erros}</div>
                         </div>
                       </div>
 
-                      {tent.respostasIncorretas?.length > 0 && (
-                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--b2)" }}>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--t2)", marginBottom: 6 }}>
-                            Questões com erro:
-                          </div>
-                          <div style={{ fontSize: 11, color: "var(--t3)", display: "flex", flexDirection: "column", gap: 4 }}>
-                            {tent.respostasIncorretas.map((q, idx) => (
-                              <div key={idx}>• {q.questaoEnunciado?.substring(0, 60)}...</div>
-                            ))}
-                          </div>
+                      {/* Botões */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 10, borderTop: "1px solid var(--b2)", gap: 8, flexWrap: "wrap" }}>
+                        <div style={{ fontSize: 11, color: fbEnviado ? "var(--green)" : "var(--t3)", fontWeight: 600 }}>
+                          {fbEnviado ? "✅ Feedback enviado ao aluno" : fb ? "📝 Rascunho salvo" : "⏳ Sem feedback ainda"}
                         </div>
-                      )}
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            onClick={() => setRelatorioTentativaId(tent.id)}
+                            style={{
+                              padding: "6px 14px", borderRadius: 6, border: "none",
+                              background: "var(--s3)", color: "var(--t2)",
+                              fontSize: 12, fontWeight: 700, cursor: "pointer"
+                            }}
+                          >
+                            📄 Ver Correção
+                          </button>
+                          <button
+                            onClick={() => setFeedbackTentativaId(tent.id)}
+                            style={{
+                              padding: "6px 14px", borderRadius: 6, border: "none",
+                              background: fbEnviado ? "var(--green-d)" : "var(--blue-d)",
+                              color: fbEnviado ? "var(--green)" : "var(--blue)",
+                              fontSize: 12, fontWeight: 700, cursor: "pointer"
+                            }}
+                          >
+                            {fbEnviado ? "✏️ Editar Feedback" : "📋 Dar Feedback"}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
               </div>
             )}
           </div>
+        )}
+
+        {relatorioTentativaId && (
+          <ModalRelatorioCorrecao
+            tentativaId={relatorioTentativaId}
+            questoes={questoes}
+            alunos={alunos}
+            onClose={() => setRelatorioTentativaId(null)}
+          />
+        )}
+
+        {feedbackTentativaId && (
+          <ModalFeedbackCoach
+            tentativaId={feedbackTentativaId}
+            coachId={coachId}
+            questoes={questoes}
+            onClose={() => { setFeedbackTentativaId(null); setTick(t => t+1); }}
+          />
         )}
 
         {adicionandoQuestao && (
@@ -5989,92 +6281,462 @@ function ModalAdicionarQuestao({ simuladoId, onClose }) {
 }
 
 // ============================================================
-// COACH: Ranking de Alunos
+// COACH: Modal de Relatório de Correção por Tentativa
 // ============================================================
-function CoachRanking({ user }) {
-  const editais = editaisModule.getByCoach(user.id);
-  const [editalId, setEditalId] = useState(editais[0]?.id || "");
-  const alunos = usersModule.getAlunos(user.id);
-  const planos = storage.get().planos;
+function ModalRelatorioCorrecao({ tentativaId, questoes, alunos, onClose }) {
+  const tentativa = tentativasModule.getById(tentativaId);
+  if (!tentativa) return null;
+  const aluno = alunos?.find(a => a.id === tentativa.alunoId);
+  const total = questoes.length;
+  const pct = total > 0 ? Math.round((tentativa.acertos / total) * 100) : 0;
 
-  const edital = editaisModule.getById(editalId);
-
-  const ranking = alunos.map(a => {
-    const plano = planos.find(p => p.alunoId === a.id && p.editalId === editalId);
-    if (!plano) return { aluno: a, xp: 0, aulas: 0, streak: 0, nivel: gamificacaoModule.getNivel(0), plano: null };
-    const xp = gamificacaoModule.calcXP(a.id, plano.id);
-    const stats = progressoModule.getStats(a.id, plano.id);
-    const streak = gamificacaoModule.getStreakAtual(a.id, plano.id);
-    const nivel = gamificacaoModule.getNivel(xp);
-    return { aluno: a, xp, aulas: stats?.aulasFeitas || 0, streak, nivel, plano, pct: stats?.pct || 0 };
-  }).sort((a, b) => b.xp - a.xp || b.aulas - a.aulas);
-
-  const posClass = (i) => i===0?"rank-1":i===1?"rank-2":i===2?"rank-3":"";
-  const posEmoji = (i) => i===0?"🥇":i===1?"🥈":i===2?"🥉":"";
+  const overlay = { position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.85)",display:"flex",alignItems:"flex-start",justifyContent:"center",zIndex:2000,overflowY:"auto",padding:"24px 16px" };
+  const box = { background:"var(--s1)",borderRadius:14,maxWidth:680,width:"100%",padding:28,margin:"0 auto" };
 
   return (
-    <div>
-      <div className="ph"><div><h1>🏆 Ranking de Alunos</h1><p>Classificação por edital</p></div></div>
-      {editais.length > 1 && (
-        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:20}}>
-          {editais.map(e => (
-            <button key={e.id} className={`preset-btn${editalId===e.id?" active":""}`} onClick={()=>setEditalId(e.id)}>{e.name}</button>
-          ))}
+    <div style={overlay} onClick={onClose}>
+      <div style={box} onClick={e => e.stopPropagation()}>
+
+        {/* Cabeçalho */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:20 }}>
+          <div>
+            <div style={{ fontSize:18, fontWeight:900, fontFamily:"Cabinet Grotesk", color:"var(--t1)", marginBottom:4 }}>
+              📄 Relatório de Correção
+            </div>
+            <div style={{ fontSize:13, color:"var(--t3)" }}>
+              {aluno?.name || "Aluno"} · {new Date(tentativa.finishedAt).toLocaleDateString("pt-BR",{day:"2-digit",month:"short",year:"numeric"})}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background:"var(--b2)",border:"none",borderRadius:8,padding:"6px 14px",cursor:"pointer",color:"var(--t1)",fontWeight:700 }}>✕</button>
         </div>
-      )}
-      {!edital ? (
-        <div className="card"><div className="empty"><h3>Nenhum edital</h3></div></div>
-      ) : (
-        <div className="card">
-          <div className="card-title" style={{marginBottom:16}}>{edital.name}</div>
-          {ranking.length === 0 ? (
-            <p className="text-muted text-sm">Nenhum aluno neste edital.</p>
-          ) : (
-            <table className="rank-table">
-              <thead>
-                <tr>
-                  <th style={{width:50}}>#</th>
-                  <th>Aluno</th>
-                  <th>Nível</th>
-                  <th>XP</th>
-                  <th>Aulas</th>
-                  <th>🔥 Streak</th>
-                  <th>Progresso</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ranking.map((r, i) => (
-                  <tr key={r.aluno.id}>
-                    <td><div className={`rank-pos ${posClass(i)}`}>{posEmoji(i)||`${i+1}`}</div></td>
-                    <td>
-                      <div className="fw6">{r.aluno.name}</div>
-                      <div className="text-xs text-dim">{r.aluno.email}</div>
-                    </td>
-                    <td><span className="badge bn">{r.nivel.emoji} {r.nivel.name}</span></td>
-                    <td><span style={{fontFamily:"Cabinet Grotesk",fontWeight:900,color:"var(--purple)"}}>{r.xp}</span></td>
-                    <td><span style={{fontFamily:"Cabinet Grotesk",fontWeight:700,color:"var(--green)"}}>{r.aulas}</span></td>
-                    <td><span style={{fontFamily:"Cabinet Grotesk",fontWeight:700,color:"var(--amber)"}}>{r.streak}</span></td>
-                    <td style={{minWidth:120}}>
-                      {r.plano ? (
-                        <>
-                          <div style={{fontSize:11,color:"var(--t3)",marginBottom:4}}>{r.pct}%</div>
-                          <PBar pct={r.pct}/>
-                        </>
-                      ) : <span className="text-dim text-xs">Sem plano</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+
+        {/* Placar geral */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:24 }}>
+          <div style={{ padding:14, borderRadius:10, background:"var(--green-d)", textAlign:"center" }}>
+            <div style={{ fontSize:24, fontWeight:900, fontFamily:"Cabinet Grotesk", color:"var(--green)" }}>{tentativa.acertos}</div>
+            <div style={{ fontSize:11, color:"var(--green)", fontWeight:700, textTransform:"uppercase", letterSpacing:.5 }}>✓ Acertos</div>
+          </div>
+          <div style={{ padding:14, borderRadius:10, background:"var(--red-d,rgba(239,68,68,.1))", textAlign:"center" }}>
+            <div style={{ fontSize:24, fontWeight:900, fontFamily:"Cabinet Grotesk", color:"var(--red)" }}>{tentativa.erros}</div>
+            <div style={{ fontSize:11, color:"var(--red)", fontWeight:700, textTransform:"uppercase", letterSpacing:.5 }}>✗ Erros</div>
+          </div>
+          <div style={{ padding:14, borderRadius:10, background:"var(--s2)", textAlign:"center" }}>
+            <div style={{ fontSize:24, fontWeight:900, fontFamily:"Cabinet Grotesk", color: pct>=60?"var(--green)":"var(--red)" }}>{pct}%</div>
+            <div style={{ fontSize:11, color:"var(--t3)", fontWeight:700, textTransform:"uppercase", letterSpacing:.5 }}>Aproveitamento</div>
+          </div>
         </div>
-      )}
+
+        {/* Lista de questões */}
+        <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+          {questoes.map((q, i) => {
+            const resp = tentativa.respostas?.find(r => r.questaoId === q.id);
+            const respostaAluno = resp?.resposta;
+            const acertou = respostaAluno === q.gabarito;
+            const borderColor = acertou ? "var(--green)" : "var(--red)";
+            const bgColor = acertou ? "var(--green-d)" : "rgba(239,68,68,.08)";
+
+            return (
+              <div key={q.id} style={{ padding:16, borderRadius:10, background:bgColor, border:`1.5px solid ${borderColor}` }}>
+                {/* Número + ícone */}
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+                  <div style={{ width:28, height:28, borderRadius:7, background: acertou?"var(--green)":"var(--red)", display:"flex",alignItems:"center",justifyContent:"center", fontSize:13, fontWeight:900, color:"white", flexShrink:0 }}>
+                    {acertou ? "✓" : "✗"}
+                  </div>
+                  <div style={{ fontSize:12, fontWeight:700, color:"var(--t3)", textTransform:"uppercase", letterSpacing:.5 }}>
+                    Questão {i+1} · {q.tipo === "ce" ? "Certo/Errado" : "Múltipla Escolha"}
+                  </div>
+                </div>
+
+                {/* Enunciado */}
+                <div style={{ fontSize:13, color:"var(--t1)", lineHeight:1.6, marginBottom:12 }}>
+                  {q.enunciado}
+                </div>
+
+                {/* Alternativas (múltipla escolha) */}
+                {q.tipo === "multipla" && (
+                  <div style={{ display:"flex", flexDirection:"column", gap:5, marginBottom:12 }}>
+                    {(q.alternativas || []).map((alt, idx) => {
+                      const letra = String.fromCharCode(65 + idx);
+                      const isGabarito = letra === q.gabarito;
+                      const isResposta = letra === respostaAluno;
+                      let bg = "var(--s3)";
+                      let color = "var(--t2)";
+                      let border = "1px solid transparent";
+                      if (isGabarito) { bg = "var(--green-d)"; color = "var(--green)"; border = "1px solid var(--green)"; }
+                      else if (isResposta && !acertou) { bg = "rgba(239,68,68,.12)"; color = "var(--red)"; border = "1px solid var(--red)"; }
+                      return (
+                        <div key={idx} style={{ padding:"7px 12px", borderRadius:7, background:bg, color, border, fontSize:12, display:"flex", gap:8, alignItems:"center" }}>
+                          <span style={{ fontWeight:700, minWidth:18 }}>{letra}.</span>
+                          <span style={{ flex:1 }}>{alt}</span>
+                          {isGabarito && <span style={{ fontSize:11, fontWeight:700 }}>✓ Gabarito</span>}
+                          {isResposta && !acertou && <span style={{ fontSize:11, fontWeight:700 }}>← Resposta</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Certo/Errado */}
+                {q.tipo === "ce" && (
+                  <div style={{ display:"flex", gap:10, marginBottom:12 }}>
+                    {["C","E"].map(op => {
+                      const label = op === "C" ? "Certo" : "Errado";
+                      const isGabarito = op === q.gabarito;
+                      const isResposta = op === respostaAluno;
+                      let bg = "var(--s3)"; let color = "var(--t2)"; let border = "1px solid transparent";
+                      if (isGabarito) { bg = "var(--green-d)"; color = "var(--green)"; border = "1px solid var(--green)"; }
+                      else if (isResposta && !acertou) { bg = "rgba(239,68,68,.12)"; color = "var(--red)"; border = "1px solid var(--red)"; }
+                      return (
+                        <div key={op} style={{ padding:"7px 18px", borderRadius:7, background:bg, color, border, fontSize:13, fontWeight:700, display:"flex",gap:6,alignItems:"center" }}>
+                          {label}
+                          {isGabarito && <span style={{ fontSize:11 }}>✓</span>}
+                          {isResposta && !acertou && <span style={{ fontSize:11 }}>←</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Resultado inline */}
+                <div style={{ fontSize:12, color: acertou?"var(--green)":"var(--red)", fontWeight:700 }}>
+                  {acertou
+                    ? "✓ Resposta correta"
+                    : respostaAluno
+                      ? `✗ Respondeu ${respostaAluno} · Gabarito: ${q.gabarito}`
+                      : "✗ Não respondida · Gabarito: " + q.gabarito
+                  }
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
 
 // ============================================================
-// ROOT
+// COACH: Modal de Feedback Pedagógico por Tentativa
+// ============================================================
+function ModalFeedbackCoach({ tentativaId, coachId, questoes, onClose }) {
+  const tentativa = tentativasModule.getById(tentativaId);
+  const fbExistente = feedbackModule.getByTentativa(tentativaId);
+  const aluno = tentativa ? usersModule.getById(tentativa.alunoId) : null;
+
+  // Inicializa comentários por questão
+  const initComents = () => questoes.map(q => {
+    const ex = fbExistente?.comentariosQuestoes?.find(c => c.questaoId === q.id);
+    const resp = tentativa?.respostas?.find(r => r.questaoId === q.id);
+    const acertou = resp?.resposta === q.gabarito;
+    return { questaoId: q.id, acertou, comentario: ex?.comentario || "", explicacao: ex?.explicacao || "" };
+  });
+
+  const [comentarios, setComentarios] = useState(initComents);
+  const [orientacoesGerais, setOrientacoesGerais] = useState(fbExistente?.orientacoesGerais || "");
+  const [sugestoesConteudo, setSugestoesConteudo] = useState(fbExistente?.sugestoesConteudo || "");
+  const [temasRevisar, setTemasRevisar] = useState(fbExistente?.temasRevisar || "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  if (!tentativa || !aluno) return null;
+
+  const total = questoes.length;
+  const acertos = tentativa.acertos || 0;
+  const pct = total > 0 ? Math.round((acertos / total) * 100) : 0;
+
+  function updateComentario(idx, field, val) {
+    setComentarios(prev => prev.map((c, i) => i === idx ? { ...c, [field]: val } : c));
+  }
+
+  function salvar(status) {
+    setSaving(true);
+    feedbackModule.salvar(coachId, tentativaId, {
+      comentariosQuestoes: comentarios,
+      orientacoesGerais, sugestoesConteudo, temasRevisar, status
+    });
+    setSaving(false);
+    setSaved(true);
+    if (status === "enviado") { setTimeout(onClose, 800); }
+    else { setTimeout(() => setSaved(false), 2000); }
+  }
+
+  const inp = { width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid var(--b2)", background: "var(--s3)", color: "var(--t1)", fontSize: 12, fontFamily: "inherit" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 2000, overflowY: "auto", padding: "20px 16px" }}>
+      <div style={{ background: "var(--s1)", borderRadius: 14, maxWidth: 660, width: "100%", padding: 28 }} onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 4 }}>Feedback Pedagógico</div>
+            <h2 style={{ fontSize: 18, fontWeight: 900, marginBottom: 2 }}>📋 {aluno.name}</h2>
+            <div style={{ fontSize: 12, color: "var(--t3)" }}>
+              {simuladosModule.getById(tentativa.simuladoId)?.nome} · {new Date(tentativa.finishedAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "var(--b2)", color: "var(--t1)", fontSize: 12, cursor: "pointer" }}>Fechar</button>
+        </div>
+
+        {/* Resumo de desempenho */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 20, padding: 14, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--green)" }}>{acertos}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Acertos</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--red)" }}>{tentativa.erros || 0}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Erros</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: pct >= 60 ? "var(--green)" : "var(--red)" }}>{pct}%</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Aproveitamento</div>
+          </div>
+        </div>
+
+        {/* Comentarios por questao */}
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 12 }}>Analise por Questao</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
+          {questoes.map((q, i) => {
+            const c = comentarios[i] || {};
+            const resp = tentativa.respostas?.find(r => r.questaoId === q.id);
+            return (
+              <div key={q.id} style={{ padding: 14, borderRadius: 8, background: "var(--s2)", border: `1px solid ${c.acertou ? "rgba(34,211,165,0.25)" : "rgba(248,113,113,0.25)"}` }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>{c.acertou ? "\u2705" : "\u274c"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: c.acertou ? "var(--green)" : "var(--red)", marginBottom: 4 }}>
+                      Questao {i + 1} \u2014 {c.acertou ? "ACERTOU" : "ERROU"}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--t1)", lineHeight: 1.5, marginBottom: 6 }}>{q.enunciado}</div>
+                    <div style={{ fontSize: 11, color: "var(--t3)" }}>
+                      Resposta: <strong style={{ color: "var(--t2)" }}>{resp?.resposta || "\u2014"}</strong>
+                      {!c.acertou && <> \u00b7 Gabarito: <strong style={{ color: "var(--green)" }}>{q.gabarito}</strong></>}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t3)", marginBottom: 4, textTransform: "uppercase" }}>Comentario</label>
+                    <textarea value={c.comentario || ""} onChange={e => updateComentario(i, "comentario", e.target.value)}
+                      placeholder="Observacao sobre esta questao..." style={{ ...inp, minHeight: 52, resize: "vertical" }} />
+                  </div>
+                  {!c.acertou && (
+                    <div>
+                      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t3)", marginBottom: 4, textTransform: "uppercase" }}>Explicacao do Erro</label>
+                      <textarea value={c.explicacao || ""} onChange={e => updateComentario(i, "explicacao", e.target.value)}
+                        placeholder="Explique por que a resposta esta errada e o raciocinio correto..." style={{ ...inp, minHeight: 52, resize: "vertical" }} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Orientacoes gerais */}
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 12 }}>Orientacoes Gerais</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t2)", marginBottom: 5, textTransform: "uppercase" }}>Orientacoes e Analise Geral</label>
+            <textarea value={orientacoesGerais} onChange={e => setOrientacoesGerais(e.target.value)}
+              placeholder="Analise geral do desempenho, pontos fortes, pontos a melhorar..."
+              style={{ ...inp, minHeight: 80, resize: "vertical" }} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t2)", marginBottom: 5, textTransform: "uppercase" }}>Sugestoes de Conteudo para Aprofundamento</label>
+            <textarea value={sugestoesConteudo} onChange={e => setSugestoesConteudo(e.target.value)}
+              placeholder="Indique materiais, livros, topicos ou videoaulas para estudo complementar..."
+              style={{ ...inp, minHeight: 60, resize: "vertical" }} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: "var(--t2)", marginBottom: 5, textTransform: "uppercase" }}>Temas que Precisam de Revisao</label>
+            <textarea value={temasRevisar} onChange={e => setTemasRevisar(e.target.value)}
+              placeholder="Liste os temas com baixo desempenho que precisam ser revisados prioritariamente..."
+              style={{ ...inp, minHeight: 60, resize: "vertical" }} />
+          </div>
+        </div>
+
+        {saved && <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--green-d)", color: "var(--green)", fontSize: 12, fontWeight: 700, textAlign: "center", marginBottom: 12 }}>Salvo com sucesso!</div>}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => salvar("rascunho")} disabled={saving}
+            style={{ flex: 1, padding: "10px", borderRadius: 8, border: "1px solid var(--b2)", background: "transparent", color: "var(--t2)", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            Salvar Rascunho
+          </button>
+          <button onClick={() => salvar("enviado")} disabled={saving}
+            style={{ flex: 2, padding: "10px", borderRadius: 8, border: "none", background: "var(--green)", color: "#07080f", fontSize: 13, fontWeight: 900, cursor: "pointer" }}>
+            Enviar Feedback ao Aluno
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ALUNO: Modal para visualizar feedback recebido do coach
+// ============================================================
+function ModalVerFeedback({ tentativaId, onClose }) {
+  const tentativa = tentativasModule.getById(tentativaId);
+  const fb = feedbackModule.getEnviadoParaAluno(tentativaId);
+  if (!tentativa || !fb) return null;
+
+  const simulado = simuladosModule.getById(tentativa.simuladoId);
+  const questoes = questoesModule.getBySimulado(tentativa.simuladoId);
+  const total = questoes.length;
+  const pct = total > 0 ? Math.round((tentativa.acertos / total) * 100) : 0;
+  const coach = usersModule.getById(fb.coachId);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 2000, overflowY: "auto", padding: "20px 16px" }}>
+      <div style={{ background: "var(--s1)", borderRadius: 14, maxWidth: 660, width: "100%", padding: 28 }} onClick={e => e.stopPropagation()}>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--green)", marginBottom: 4 }}>Feedback do seu professor</div>
+            <h2 style={{ fontSize: 18, fontWeight: 900, marginBottom: 2 }}>{simulado?.nome}</h2>
+            <div style={{ fontSize: 12, color: "var(--t3)" }}>
+              Enviado por {coach?.name || "Coach"} \u00b7 {new Date(fb.enviadoEm).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" })}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: "var(--b2)", color: "var(--t1)", fontSize: 12, cursor: "pointer" }}>Fechar</button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 20, padding: 14, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 24, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--green)" }}>{tentativa.acertos}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Acertos</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 24, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: "var(--red)" }}>{tentativa.erros}</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Erros</div>
+          </div>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 24, fontWeight: 900, fontFamily: "Cabinet Grotesk", color: pct >= 60 ? "var(--green)" : "var(--red)" }}>{pct}%</div>
+            <div style={{ fontSize: 10, color: "var(--t3)", fontWeight: 700, textTransform: "uppercase" }}>Aproveitamento</div>
+          </div>
+        </div>
+
+        {fb.comentariosQuestoes?.some(c => c.comentario || c.explicacao) && (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "var(--t3)", marginBottom: 12 }}>Analise por Questao</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+              {fb.comentariosQuestoes.map((c, i) => {
+                const q = questoes.find(q => q.id === c.questaoId);
+                if (!q || (!c.comentario && !c.explicacao && c.acertou)) return null;
+                return (
+                  <div key={c.questaoId} style={{ padding: 14, borderRadius: 8, background: "var(--s2)", border: `1px solid ${c.acertou ? "rgba(34,211,165,0.2)" : "rgba(248,113,113,0.2)"}` }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 16 }}>{c.acertou ? "\u2705" : "\u274c"}</span>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: c.acertou ? "var(--green)" : "var(--red)" }}>
+                        Questao {i + 1} \u2014 {c.acertou ? "Correta" : "Incorreta"}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--t2)", marginBottom: 8, lineHeight: 1.5 }}>{q.enunciado}</div>
+                    {c.comentario && (
+                      <div style={{ padding: "8px 12px", borderRadius: 6, background: "var(--s3)", marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", marginBottom: 4 }}>Comentario do professor</div>
+                        <div style={{ fontSize: 12, color: "var(--t1)", lineHeight: 1.6 }}>{c.comentario}</div>
+                      </div>
+                    )}
+                    {c.explicacao && (
+                      <div style={{ padding: "8px 12px", borderRadius: 6, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)" }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--red)", textTransform: "uppercase", marginBottom: 4 }}>Explicacao do erro</div>
+                        <div style={{ fontSize: 12, color: "var(--t1)", lineHeight: 1.6 }}>{c.explicacao}</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {fb.orientacoesGerais && (
+          <div style={{ padding: 16, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Orientacoes Gerais</div>
+            <div style={{ fontSize: 13, color: "var(--t1)", lineHeight: 1.6 }}>{fb.orientacoesGerais}</div>
+          </div>
+        )}
+
+        {fb.sugestoesConteudo && (
+          <div style={{ padding: 16, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)", marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Sugestoes de Conteudo</div>
+            <div style={{ fontSize: 13, color: "var(--t1)", lineHeight: 1.6 }}>{fb.sugestoesConteudo}</div>
+          </div>
+        )}
+
+        {fb.temasRevisar && fb.temasRevisar.length > 0 && (
+          <div style={{ padding: 16, borderRadius: 10, background: "var(--s2)", border: "1px solid var(--b1)", marginBottom: 20 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--t3)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Temas para Revisar</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {fb.temasRevisar.map((t, i) => (
+                <span key={i} style={{ padding: "4px 10px", borderRadius: 20, background: "var(--purple-d)", color: "var(--purple)", fontSize: 12, fontWeight: 600 }}>{t}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button onClick={onClose} style={{ width: "100%", padding: "12px", borderRadius: 10, border: "none", background: "var(--s3)", color: "var(--t1)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+          Fechar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// COACH: Ranking
+// ============================================================
+function CoachRanking({ user }) {
+  const [tick, setTick] = useState(0);
+  const alunos = usersModule.getAlunos(user.id);
+  function buildRanking(a) {
+    const plano = planosModule.getByAluno(a.id)[0];
+    if (!plano) return null;
+    const xp = gamificacaoModule.calcXP(a.id, plano.id);
+    const nivel = gamificacaoModule.getNivel(xp);
+    const streak = gamificacaoModule.getStreakAtual(a.id, plano.id);
+    const stats = progressoModule.getStats(a.id, plano.id);
+    return { aluno: a, xp, aulas: stats?.aulasFeitas || 0, streak, nivel, plano, pct: stats?.pct || 0 };
+  }
+  const ranking = alunos.map(buildRanking).filter(Boolean).sort((a,b) => b.xp - a.xp);
+
+  return (
+    <div>
+      <div className="ph"><div><h1>Ranking</h1><p>Desempenho dos alunos</p></div></div>
+      {ranking.length === 0
+        ? <div className="card"><div className="empty"><h3>Nenhum aluno com plano ativo</h3></div></div>
+        : (
+          <div className="card">
+            <table className="rank-table">
+              <thead><tr><th>#</th><th>Aluno</th><th>XP</th><th>Nível</th><th>Aulas</th><th>Streak</th><th>%</th></tr></thead>
+              <tbody>
+                {ranking.map((r, i) => (
+                  <tr key={r.aluno.id}>
+                    <td><div className={`rank-pos rank-${i+1}`}>{i+1}</div></td>
+                    <td><div style={{fontWeight:600}}>{r.aluno.name}</div></td>
+                    <td><div style={{fontWeight:700,color:"var(--amber)"}}>{r.xp} XP</div></td>
+                    <td><div style={{fontSize:12}}>{r.nivel.icon} {r.nivel.name}</div></td>
+                    <td>{r.aulas}</td>
+                    <td>{r.streak > 0 ? `🔥 ${r.streak}` : "—"}</td>
+                    <td>
+                      <div style={{fontSize:11,color:"var(--t3)",marginBottom:4}}>{r.pct}%</div>
+                      <PBar pct={r.pct}/>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      }
+    </div>
+  );
+}
+
+// ============================================================
+// ALUNO: Ranking
 // ============================================================
 export default function App() {
   const [user, setUser] = useState(null);
@@ -6086,7 +6748,6 @@ export default function App() {
   useEffect(() => {
     storage.load().then(() => {
       setDbLoaded(true);
-      // Restore session from localStorage
       try {
         const savedId = localStorage.getItem('estudaai_session');
         if (savedId) {
@@ -6110,8 +6771,7 @@ export default function App() {
     <>
       <style dangerouslySetInnerHTML={{ __html: css }} />
       <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", background:"var(--bg)", flexDirection:"column", gap:"16px" }}>
-        <div style={{ fontSize:"40px" }}>📚</div>
-        <div style={{ color:"var(--green)", fontFamily:"Cabinet Grotesk", fontWeight:900, fontSize:"22px", letterSpacing:"-0.5px" }}>EstudaAI</div>
+        <div style={{ width:40, height:40, border:"3px solid var(--b2)", borderTop:"3px solid var(--blue)", borderRadius:"50%", animation:"spin 1s linear infinite" }}/>
         <div style={{ color:"var(--t3)", fontSize:"13px" }}>Conectando ao banco de dados...</div>
       </div>
     </>
@@ -6128,20 +6788,20 @@ export default function App() {
     if (user.role === "admin") {
       if (page==="dashboard") return <AdminDashboard refresh={refresh}/>;
       if (page==="coaches")   return <AdminCoaches   refresh={refresh}/>;
-      if (page==="alunos")    return <AdminAlunos    refresh={refresh}/>;
+      if (page==="alunos")    return <AdminAlunos     refresh={refresh}/>;
       if (page==="logs")      return <AdminLogs/>;
       if (page==="debug")     return <AdminDebug/>;
     }
     if (user.role === "coach") {
-      if (page==="dashboard")      return <CoachDashboard user={user} refresh={refresh}/>;
-      if (page==="alunos")         return <CoachAlunos    user={user} refresh={refresh}/>;
-      if (page==="editais")        return <CoachEditais   user={user} refresh={refresh}/>;
+      if (page==="dashboard")       return <CoachDashboard       user={user} refresh={refresh}/>;
+      if (page==="alunos")          return <CoachAlunos          user={user} refresh={refresh}/>;
+      if (page==="editais")         return <CoachEditais         user={user} refresh={refresh}/>;
       if (page==="gerenciar-plano") return <CoachGerenciarPlanos user={user} refresh={refresh}/>;
-      if (page==="progresso")      return <CoachProgresso user={user}/>;
-      if (page==="conteudo")       return <CoachConteudo user={user} refresh={refresh}/>;
-      if (page==="resumos")        return <CoachResumos user={user} refresh={refresh}/>;
-      if (page==="simulados")      return <CoachSimulados user={user} refresh={refresh}/>;
-      if (page==="ranking")        return <CoachRanking   user={user}/>;
+      if (page==="progresso")       return <CoachProgresso       user={user}/>;
+      if (page==="conteudo")        return <CoachConteudo        user={user} refresh={refresh}/>;
+      if (page==="resumos")         return <CoachResumos         user={user} refresh={refresh}/>;
+      if (page==="simulados")       return <CoachSimulados       user={user} refresh={refresh}/>;
+      if (page==="ranking")         return <CoachRanking         user={user}/>;
     }
     if (user.role === "aluno") {
       if (page==="dashboard") return <AlunoDashboard user={user} refresh={refresh} setPage={setPage}/>;
