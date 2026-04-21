@@ -6890,57 +6890,46 @@ function CoachRanking({ user }) {
 // ============================================================
 function GeradorDePrompt() {
   const [tema, setTema] = useState("");
-  const [tipo, setTipo] = useState("avancado");
-  const [modelo, setModelo] = useState("resumo-estrategico");
+  const [modo, setModo] = useState("estudo-padrao");
   const [promptGerado, setPromptGerado] = useState("");
   const [copied, setCopied] = useState(false);
 
   const BASE = "Você é um professor especialista em concursos públicos de alto nível, com foco em provas de Tribunais de Contas, banca CESPE/Cebraspe, e especialista em didática para aprovação.";
 
-  const TIPOS = [
-    { id:"avancado",  label:"🎯 Avançado",        desc:"Apostila completa e aprofundada" },
-    { id:"resumo",    label:"📋 Resumo",           desc:"Revisão estratégica e objetiva" },
-    { id:"otimizado", label:"⚡ Prompt Otimizado", desc:"Equilibrado e eficiente para IA" },
-  ];
-  const MODELOS = [
-    { id:"resumo-estrategico", label:"📝 Resumo Estratégico",      desc:"Conceitos, pegadinhas e revisão" },
-    { id:"gerador-questoes",   label:"❓ Gerador de Questões",     desc:"Múltipla escolha + Certo/Errado" },
-    { id:"lei-seca",           label:"⚖️ Lei Seca Mastigada",      desc:"Texto legal em linguagem simples" },
-    { id:"dificuldade",        label:"🧩 Tópicos com Dificuldade", desc:"Explicação do zero com exemplos" },
-    { id:"ficha-memorizacao",  label:"🃏 Ficha de Memorização",    desc:"Prazos, números e decoreba" },
+  const MODOS = [
+    { id:"estudo-padrao",      icon:"📘", label:"Estudo Padrão",       desc:"Apostila completa com teoria, questões e decoreba" },
+    { id:"revisar-rapido",     icon:"⚡", label:"Revisar Rápido",      desc:"Revisão objetiva para véspera de prova" },
+    { id:"decorar-lei-seca",   icon:"⚖️", label:"Decorar Lei Seca",    desc:"Texto legal mastigado e memorização" },
+    { id:"fazer-questoes",     icon:"❓", label:"Fazer Questões",      desc:"Banco de questões estilo CESPE comentadas" },
+    { id:"treinar-prova",      icon:"🎯", label:"Treinar para Prova",  desc:"Simulação intensiva com gabarito e estratégia" },
+    { id:"tema-dificil",       icon:"🧩", label:"Resolver Tema Difícil",desc:"Explicação do zero com analogias e exemplos" },
+    { id:"resumo-estrategico", icon:"📝", label:"Resumo Estratégico",  desc:"Pontos-chave, pegadinhas e palavras-chave" },
   ];
 
-  function buildPrompt(t, tp, md) {
-    const avancado = {
-      "resumo-estrategico": BASE + "\n\nSua tarefa é criar um MATERIAL COMPLETO em formato de apostila sobre o tema: " + t + "\n\nO material deve seguir EXATAMENTE a estrutura abaixo:\n\n📘 1. VISÃO GERAL DO TEMA\n• Explique o tema de forma simples e objetiva\n• Contextualize para concursos públicos\n• Destaque a importância do tema para provas de controle externo\n\n📚 2. FUNDAMENTAÇÃO TEÓRICA COMPLETA\n• Aborde TODOS os conceitos relevantes com profundidade de prova\n• Inclua: definições formais, classificações, princípios, exceções, pegadinhas\n• Estruture com subtítulos bem organizados\n• Relacione com: Constituição Federal, legislação aplicável e jurisprudência relevante\n\n🧠 3. RESUMO ESTRUTURADO (REVISÃO RÁPIDA)\n• Bullet points objetivos\n• Destaque palavras-chave\n• Ideal para revisão pré-prova\n\n⚠️ 4. PRINCIPAIS PEGADINHAS DE PROVA\n• Liste os erros mais comuns\n• Explique por que são pegadinhas\n• Mostre como a banca CESPE costuma cobrar\n\n📝 5. QUESTÕES DE FIXAÇÃO\nCrie no mínimo:\n• 10 questões nível fácil (múltipla escolha A–E)\n• 10 questões nível médio (múltipla escolha A–E)\n• 5 questões nível difícil (múltipla escolha A–E)\nPrimeiro mostre TODAS as questões SEM respostas. Depois, ao final, gabarito comentado de cada alternativa.\n\n🎯 6. QUESTÕES ESTILO CERTO/ERRADO (CESPE)\n• Crie 20 assertivas — primeiro todas sem gabarito, depois repita com gabarito comentado.\n\n🧩 7. DICAS DE PROVA\n• Estratégias práticas para identificar respostas corretas\n• Padrões recorrentes das bancas\n\n🧩 8. DECOREBA (VÉSPERA DE PROVA)\n• Prazos, números, competências, exceções e classificações para memorizar\n\n📌 REGRAS: NÃO resuma demais. Seja aprofundado. Use exemplos práticos. Foco total em aprovação.\n\nAgora gere o conteúdo completo.",
-      "gerador-questoes": BASE + "\n\nCrie um bloco INTENSIVO de questões sobre o tema: " + t + "\n\nElabore:\n• 10 questões nível fácil (múltipla escolha A–E)\n• 10 questões nível médio (múltipla escolha A–E)\n• 5 questões nível difícil (múltipla escolha A–E)\n• 20 assertivas estilo CERTO/ERRADO (CESPE/Cebraspe)\n• Foco em confundir o candidato como a banca faz\n• Cobrança semelhante a Tribunais de Contas\n\nIMPORTANTE: Primeiro mostre TODAS as questões SEM respostas, separadas por nível.\nDepois, ao final, repita com gabarito COMENTADO:\n• Explique detalhadamente cada alternativa (certa e errada)\n• Destaque a pegadinha central de cada questão\n• Explique por que o candidato erraria",
-      "lei-seca": BASE + "\n\nExplique a LEI SECA sobre " + t + ", transformando o texto legal em linguagem didática.\n\nPara cada artigo relevante:\n• Transcreva a ideia central em palavras simples\n• Explique o que significa na prática\n• Diga como a banca pode cobrar\n• Aponte as pegadinhas\n• Destaque as palavras da lei que precisam ser decoradas\n\nAo final:\n• Faça um resumo completo de memorização\n• Crie 20 questões certo/errado estilo CESPE com gabarito comentado\n• Liste os artigos mais cobrados em provas de Tribunais de Contas\n\nRegras: Seja aprofundado. Não omita artigos relevantes. Escreva como apostila premium.",
-      "dificuldade": BASE + "\n\nPreciso entender do ZERO o tema: " + t + "\n\nTenho dificuldade nesse assunto. Por favor:\n\n1. Explique como se eu nunca tivesse visto — linguagem simples e acessível\n2. Use analogias do cotidiano para facilitar a compreensão\n3. Depois avance para o nível técnico exigido em prova\n4. Mostre passo a passo como raciocinar sobre esse tema em questões\n5. Aponte os pontos que geram mais confusão e explique com calma\n6. Apresente exemplos práticos e concretos\n7. Crie 10 questões comentadas, do mais fácil ao mais difícil\n\nRegras: Seja didático acima de tudo. Use exemplos. Não pule etapas. Foco em clareza.",
-      "ficha-memorizacao": BASE + "\n\nCrie uma FICHA DE MEMORIZAÇÃO COMPLETA sobre: " + t + "\n\nA ficha deve conter:\n• ⏱️ Prazos importantes (todos eles, com base legal)\n• 🔢 Números, percentuais e quantitativos relevantes\n• 👥 Competências e atribuições dos órgãos/agentes\n• ⚠️ Exceções e casos especiais\n• 🗂️ Classificações e categorias\n• 📌 Princípios aplicáveis\n• 🔑 Palavras-chave que a banca usa\n• ❌ Vedações (o que NÃO é permitido)\n• ✅ Obrigações (o que É obrigatório)\n\nFormato: tabelas e bullet points concisos, ideal para revisão rápida na véspera da prova.",
+  function buildPrompt(t, md) {
+    const P = {
+      "estudo-padrao": BASE + "\n\nSua tarefa é criar um MATERIAL COMPLETO em formato de apostila sobre o tema: " + t + "\n\nSiga EXATAMENTE esta estrutura:\n\n📘 1. VISÃO GERAL DO TEMA\n• Explique o tema de forma simples e objetiva\n• Contextualize para concursos públicos\n• Destaque a importância para provas de controle externo\n\n📚 2. FUNDAMENTAÇÃO TEÓRICA COMPLETA\n• Aborde TODOS os conceitos relevantes com profundidade de prova\n• Inclua: definições formais, classificações, princípios, exceções, pegadinhas\n• Relacione com: Constituição Federal, legislação aplicável e jurisprudência\n\n🧠 3. RESUMO ESTRUTURADO\n• Bullet points objetivos para revisão pré-prova\n• Destaque palavras-chave\n\n⚠️ 4. PRINCIPAIS PEGADINHAS DE PROVA\n• Erros mais comuns e como a banca CESPE costuma cobrar\n\n📝 5. QUESTÕES DE FIXAÇÃO\n• 10 questões nível fácil (múltipla escolha A–E)\n• 10 questões nível médio (múltipla escolha A–E)\n• 5 questões nível difícil (múltipla escolha A–E)\nApresente PRIMEIRO todas sem gabarito, DEPOIS repita com gabarito comentado.\n\n🎯 6. QUESTÕES CERTO/ERRADO (CESPE)\n• 20 assertivas — primeiro todas, depois repita com gabarito comentado\n\n🧩 7. DECOREBA (VÉSPERA DE PROVA)\n• Prazos, números, competências, exceções e classificações para memorizar\n\nRegras: NÃO resuma demais. Seja aprofundado. Use exemplos práticos. Foco total em aprovação.",
+
+      "revisar-rapido": BASE + "\n\nPreciso de uma REVISÃO RÁPIDA e objetiva sobre: " + t + "\n\nOrganize assim:\n\n⚡ 1. CONCEITO EM 3 LINHAS — o essencial que preciso saber\n\n🔑 2. PALAVRAS-CHAVE — termos que a banca usa e que não posso esquecer\n\n🎯 3. O QUE MAIS CAI — top 5 pontos cobrados pela banca CESPE em Tribunais de Contas\n\n⚠️ 4. PEGADINHAS CLÁSSICAS — os erros que derrubam o candidato\n\n⚡ 5. DIFERENÇAS IMPORTANTES — institutos parecidos que a banca confunde\n\n📌 6. QUADRO FINAL DE REVISÃO — resumo em bullet points para ler em 2 minutos\n\nRegras: linguagem telegráfica, objetivo, sem enrolação. Ideal para ler 1 hora antes da prova.",
+
+      "decorar-lei-seca": BASE + "\n\nPreciso decorar a lei seca sobre: " + t + "\n\nTransforme o texto legal em material de memorização:\n\n⚖️ 1. ARTIGOS ESSENCIAIS — transcreva cada um em linguagem simples\n• O que o artigo diz (em palavras normais)\n• O que significa na prática\n• Como a banca pode cobrar esse artigo\n• Pegadinha do texto literal\n• Palavra-chave que precisa ser decorada\n\n📌 2. ESQUEMA DE MEMORIZAÇÃO — organize os artigos em grupos lógicos (ex: prazos, competências, vedações)\n\n🔢 3. NÚMEROS E PRAZOS — tabela com todos os valores numéricos da lei\n\n❌ 4. VEDAÇÕES — o que a lei proíbe expressamente\n\n✅ 5. OBRIGAÇÕES — o que a lei determina expressamente\n\n🃏 6. FICHA PARA COLAR NA CABEÇA — resumo ultra-compacto para memorizar de véspera\n\n📝 7. 15 QUESTÕES CERTO/ERRADO sobre o texto literal, com gabarito comentado",
+
+      "fazer-questoes": BASE + "\n\nCrie um BANCO DE QUESTÕES INTENSIVO sobre: " + t + "\n\nElabore:\n• 10 questões múltipla escolha nível fácil (A–E)\n• 15 questões múltipla escolha nível médio (A–E)\n• 5 questões múltipla escolha nível difícil (A–E)\n• 25 assertivas estilo CERTO/ERRADO (CESPE/Cebraspe)\n\nFoco em:\n• Confundir o candidato como a banca faz\n• Pegadinhas reais de provas de Tribunais de Contas\n• Detalhes que parecem corretos mas estão errados\n\nApresente PRIMEIRO todas as questões SEM gabarito (separadas por nível).\nDepois, repita com GABARITO COMENTADO:\n• Explique cada alternativa (certa e errada)\n• Destaque a pegadinha central\n• Explique por que o candidato erraria",
+
+      "treinar-prova": BASE + "\n\nQuero TREINAR PARA A PROVA com o tema: " + t + "\n\nMonte uma sessão de treino intensivo:\n\n🎯 PARTE 1 — AQUECIMENTO (revisão rápida)\n• Conceito central em até 5 bullet points\n• 3 pegadinhas clássicas do tema\n\n📝 PARTE 2 — SIMULADO (responda sem gabarito primeiro)\n• 10 questões múltipla escolha estilo Tribunais de Contas\n• 15 questões certo/errado estilo CESPE\n• Nível: médio a difícil\n\n🔍 PARTE 3 — GABARITO COMENTADO\n• Explique cada questão em detalhe\n• Para as erradas: mostre onde o candidato se perde\n• Destaque a lógica da banca\n\n🧠 PARTE 4 — PONTOS DE ATENÇÃO\n• O que errei mais nesse tema e por quê\n• Estratégia para não errar na prova real",
+
+      "tema-dificil": BASE + "\n\nPreciso entender do ZERO o tema: " + t + "\n\nTenho muita dificuldade nesse assunto. Por favor:\n\n🌱 1. EXPLICAÇÃO BÁSICA — como se eu nunca tivesse visto\n• Use linguagem simples e acessível\n• Evite jargão técnico no começo\n\n🔗 2. ANALOGIA DO DIA A DIA — compare com algo do cotidiano para facilitar\n\n📶 3. EVOLUÇÃO GRADUAL — agora avance para o nível técnico exigido em prova\n• Introduza os termos corretos\n• Explique o raciocínio jurídico por trás\n\n🔄 4. PASSO A PASSO — como raciocinar sobre esse tema em questões\n• Qual pergunta fazer na minha cabeça ao ver uma questão desse tema\n\n⚠️ 5. POR QUE AS PESSOAS ERRAM — pontos que geram mais confusão\n\n✅ 6. EXEMPLOS PRÁTICOS — situações reais ou hipotéticas\n\n📝 7. QUESTÕES COMENTADAS — 8 questões do básico ao avançado com explicação detalhada\n\nRegras: Seja didático acima de tudo. Não pule etapas. Use exemplos. Foco em clareza.",
+
+      "resumo-estrategico": BASE + "\n\nCrie um RESUMO ESTRATÉGICO de alta qualidade sobre: " + t + "\n\nEstrutura obrigatória:\n\n📌 1. CONCEITO CENTRAL — definição precisa e contextualização para concursos\n\n🎯 2. O QUE MAIS CAI EM PROVA — top 7 pontos cobrados pela banca CESPE em Tribunais de Contas\n\n🔑 3. PALAVRAS-CHAVE — termos que a banca usa e que precisam ser decorados\n\n⚖️ 4. BASE LEGAL — CF, lei e jurisprudência relevante para cada ponto\n\n🔀 5. DIFERENÇAS E COMPARAÇÕES — institutos parecidos e como distingui-los\n\n⚠️ 6. PRINCIPAIS PEGADINHAS — erros mais comuns com explicação de por que são pegadinhas\n\n📊 7. QUADRO COMPARATIVO (se aplicável) — tabela para visualizar diferenças\n\n⚡ 8. REVISÃO RÁPIDA FINAL — bullet points para ler em 3 minutos antes da prova\n\nRegras: Linguagem objetiva. Destaque o que mais cai. Nada de enrolação. Escreva como material de véspera.",
     };
-    const resumo = {
-      "resumo-estrategico": BASE + "\n\nCrie um RESUMO ESTRATÉGICO de alta qualidade sobre: " + t + "\n\nEstrutura obrigatória:\n1. Conceito central\n2. Pontos mais cobrados em prova\n3. Palavras-chave que precisam ser decoradas\n4. Diferenças entre institutos parecidos\n5. Principais pegadinhas\n6. Quadro final de revisão rápida\n\nRegras:\n• Linguagem objetiva — nada de enrolação\n• Destaque o que mais cai em Tribunais de Contas\n• Relacione com CF, lei e jurisprudência relevante\n• Escreva como material de revisão de véspera",
-      "gerador-questoes": BASE + "\n\nCrie um conjunto focado de questões sobre: " + t + "\n\n• 10 questões múltipla escolha nível médio/difícil\n• 10 questões certo/errado estilo CESPE\n\nApresente primeiro as questões sem gabarito.\nDepois, gabarito comentado com:\n• Explicação de cada alternativa errada\n• Pegadinha principal de cada questão",
-      "lei-seca": BASE + "\n\nFaça um resumo da lei seca sobre " + t + " com foco em prova.\n\n• Principais artigos e seus significados práticos\n• O que a banca mais cobra desse texto legal\n• Pegadinhas do texto literal\n• Palavras-chave que devem ser decoradas\n• 10 questões certo/errado sobre o texto legal com gabarito comentado",
-      "dificuldade": BASE + "\n\nTenho dificuldade no tema: " + t + "\n\nExplique de forma simples e direta:\n• Conceito básico com analogia do dia a dia\n• Pontos que mais confundem candidatos\n• Como raciocinar sobre esse tema em questões\n• 5 questões comentadas do básico ao intermediário",
-      "ficha-memorizacao": BASE + "\n\nCrie uma ficha resumida de memorização sobre: " + t + "\n\nInclua apenas o essencial para a prova:\n• Prazos e números\n• Competências principais\n• Exceções importantes\n• Classificações\n• Palavras-chave obrigatórias",
-    };
-    const otimizado = {
-      "resumo-estrategico": BASE + "\n\nTema: " + t + "\n\nProduza um resumo estratégico com:\n• Conceito central e contextualização para concursos\n• 5 pontos mais cobrados pela banca CESPE em Tribunais de Contas\n• Diferenças entre institutos similares\n• Principais pegadinhas com explicação\n• Referências: CF, lei e jurisprudência\n• Quadro de revisão rápida ao final\n\nLinguagem objetiva e técnica, foco em aprovação.",
-      "gerador-questoes": BASE + "\n\nTema: " + t + "\n\nElabore questões estilo Tribunais de Contas/CESPE:\n• 15 questões múltipla escolha (nível médio e difícil)\n• 15 questões certo/errado\n• Foco em pegadinhas reais de banca\n\nExiba primeiro as questões sem gabarito.\nDepois, gabarito com comentários objetivos e destaque das armadilhas.",
-      "lei-seca": BASE + "\n\nTema: " + t + "\n\nTransforme a lei seca em linguagem didática:\n• Principais dispositivos legais explicados em linguagem simples\n• Como a banca CESPE cobra cada ponto\n• Pegadinhas do texto literal\n• Resumo de memorização ao final\n• 10 questões certo/errado com gabarito comentado",
-      "dificuldade": BASE + "\n\nDificuldade em: " + t + "\n\nExplique de forma clara e progressiva:\n1. Conceito básico com exemplo prático e analogia\n2. Pontos que mais geram confusão nos candidatos\n3. Como raciocinar sobre esse tema em questões de prova\n4. 5 questões comentadas (básico ao avançado)",
-      "ficha-memorizacao": BASE + "\n\nCrie uma ficha de memorização objetiva sobre: " + t + "\n\nEm formato de bullet points ou tabela:\n• Prazos, números e percentuais\n• Competências e atribuições\n• Exceções e vedações\n• Classificações\n• Palavras-chave essenciais para a prova",
-    };
-    const map = { avancado, resumo, otimizado };
-    return (map[tp] && map[tp][md]) ? map[tp][md] : "";
+    return P[md] || "";
   }
 
   function handleGerar() {
     if (!tema.trim()) return;
-    setPromptGerado(buildPrompt(tema.trim(), tipo, modelo));
+    setPromptGerado(buildPrompt(tema.trim(), modo));
     setCopied(false);
-    setTimeout(() => { document.getElementById("gp-output") && document.getElementById("gp-output").scrollIntoView({ behavior:"smooth", block:"start" }); }, 150);
+    setTimeout(() => { const el = document.getElementById("gp-output"); if (el) el.scrollIntoView({ behavior:"smooth", block:"start" }); }, 150);
   }
 
   function handleCopiar() {
@@ -6957,47 +6946,37 @@ function GeradorDePrompt() {
     URL.revokeObjectURL(url);
   }
 
-  const tipoAtual  = TIPOS.find(x => x.id === tipo);
-  const modeloAtual = MODELOS.find(x => x.id === modelo);
-
   return (
-    <div style={{ maxWidth:860, margin:"0 auto", padding:"32px 24px" }}>
+    <div style={{ maxWidth:800, margin:"0 auto", padding:"32px 24px" }}>
       <div style={{ marginBottom:32 }}>
         <h1 style={{ fontSize:26, fontWeight:900, fontFamily:"Cabinet Grotesk", marginBottom:8 }}>🧠 Gerador Inteligente de Prompts para Concursos</h1>
         <p style={{ color:"var(--t2)", fontSize:15, margin:0 }}>Crie prompts premium para estudar qualquer assunto com IA.</p>
       </div>
+
       <div style={{ marginBottom:24 }}>
         <label style={{ fontSize:11, fontWeight:700, letterSpacing:.6, textTransform:"uppercase", color:"var(--t3)", display:"block", marginBottom:8 }}>📖 Tema da aula / assunto</label>
         <input className="inp" value={tema} onChange={e=>setTema(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleGerar()} placeholder="Ex: Controle de Constitucionalidade · Licitações Lei 14.133 · Auditoria Governamental · Ato Administrativo" style={{ fontSize:15, padding:"14px 16px" }}/>
       </div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20, marginBottom:28 }}>
-        <div>
-          <label style={{ fontSize:11, fontWeight:700, letterSpacing:.6, textTransform:"uppercase", color:"var(--t3)", display:"block", marginBottom:10 }}>Tipo de Prompt</label>
-          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {TIPOS.map(item=>(
-              <label key={item.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 14px", borderRadius:9, background:tipo===item.id?"var(--blue-d)":"var(--s2)", border:"1.5px solid "+(tipo===item.id?"var(--blue)":"var(--b2)"), cursor:"pointer", transition:"all .15s" }}>
-                <input type="radio" name="tipo" checked={tipo===item.id} onChange={()=>setTipo(item.id)} style={{ accentColor:"var(--blue)", flexShrink:0 }}/>
-                <div><div style={{ fontSize:13, fontWeight:700 }}>{item.label}</div><div style={{ fontSize:11, color:"var(--t3)" }}>{item.desc}</div></div>
-              </label>
-            ))}
-          </div>
-        </div>
-        <div>
-          <label style={{ fontSize:11, fontWeight:700, letterSpacing:.6, textTransform:"uppercase", color:"var(--t3)", display:"block", marginBottom:10 }}>Modelo de Estudo</label>
-          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {MODELOS.map(item=>(
-              <label key={item.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 14px", borderRadius:9, background:modelo===item.id?"var(--green-d)":"var(--s2)", border:"1.5px solid "+(modelo===item.id?"var(--green)":"var(--b2)"), cursor:"pointer", transition:"all .15s" }}>
-                <input type="radio" name="modelo" checked={modelo===item.id} onChange={()=>setModelo(item.id)} style={{ accentColor:"var(--green)", flexShrink:0 }}/>
-                <div><div style={{ fontSize:13, fontWeight:700 }}>{item.label}</div><div style={{ fontSize:11, color:"var(--t3)" }}>{item.desc}</div></div>
-              </label>
-            ))}
-          </div>
+
+      <div style={{ marginBottom:28 }}>
+        <label style={{ fontSize:11, fontWeight:700, letterSpacing:.6, textTransform:"uppercase", color:"var(--t3)", display:"block", marginBottom:12 }}>O que você quer fazer?</label>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:10 }}>
+          {MODOS.map(m=>(
+            <label key={m.id} style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"14px", borderRadius:10, background:modo===m.id?"var(--green-d)":"var(--s2)", border:"1.5px solid "+(modo===m.id?"var(--green)":"var(--b2)"), cursor:"pointer", transition:"all .15s" }}>
+              <input type="radio" name="modo" checked={modo===m.id} onChange={()=>setModo(m.id)} style={{ accentColor:"var(--green)", flexShrink:0, marginTop:2 }}/>
+              <div>
+                <div style={{ fontSize:13, fontWeight:700 }}>{m.icon} {m.label}</div>
+                <div style={{ fontSize:11, color:"var(--t3)", marginTop:2 }}>{m.desc}</div>
+              </div>
+            </label>
+          ))}
         </div>
       </div>
-      <button onClick={handleGerar} disabled={!tema.trim()} style={{ width:"100%", padding:"16px", borderRadius:10, border:"none", cursor:tema.trim()?"pointer":"not-allowed", background:tema.trim()?"var(--green)":"var(--s3)", color:tema.trim()?"#07080f":"var(--t3)", fontSize:17, fontWeight:900, fontFamily:"Cabinet Grotesk", transition:"all .18s", marginBottom:10 }}>🚀 Gerar Prompt</button>
-      {tipoAtual&&modeloAtual&&tema.trim()&&<div style={{ textAlign:"center", fontSize:12, color:"var(--t3)", marginBottom:24 }}>{tipoAtual.label} · {modeloAtual.label}</div>}
+
+      <button onClick={handleGerar} disabled={!tema.trim()} style={{ width:"100%", padding:"16px", borderRadius:10, border:"none", cursor:tema.trim()?"pointer":"not-allowed", background:tema.trim()?"var(--green)":"var(--s3)", color:tema.trim()?"#07080f":"var(--t3)", fontSize:17, fontWeight:900, fontFamily:"Cabinet Grotesk", transition:"all .18s", marginBottom:8 }}>🚀 Gerar Prompt</button>
+
       {promptGerado&&(
-        <div id="gp-output" style={{ marginTop:8 }}>
+        <div id="gp-output" style={{ marginTop:24 }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, flexWrap:"wrap", gap:8 }}>
             <div style={{ fontSize:13, fontWeight:700, letterSpacing:.6, textTransform:"uppercase", color:"var(--green)" }}>✅ Prompt Gerado</div>
             <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
