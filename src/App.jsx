@@ -985,6 +985,47 @@ planosModule.regenerarFuturo = function(planoId, alunoId, novaRotina) {
       }
     }
   }
+  // Reagenda revisões FUTURAS das aulas já concluídas (que sumiram ao regenerar o plano).
+  // Para cada aula feita, calcula os intervalos de revisão e adiciona ao plano
+  // apenas as datas que ainda não chegaram e ainda não foram feitas.
+  const topicMap = {};
+  allTopicos.forEach(t => { topicMap[t.id] = t; });
+  // Também inclui os tópicos que estavam no plano antigo mas não estão em allTopicos (edge case)
+  Object.values(plano.plan || {}).forEach(day =>
+    (day.topicos || []).forEach(t => { if (!topicMap[t.id]) topicMap[t.id] = t; })
+  );
+  const doneRevKeys = new Set(
+    (db.progresso || []).filter(p => p.planoId === planoId && p.done && p.key.endsWith('-rev')).map(p => p.key)
+  );
+  // Agrupa por topicId → data mais antiga de conclusão
+  const doneByTopic = {};
+  doneProgresso.forEach(p => {
+    const date = p.key.substring(0, 10);
+    const tid  = p.key.substring(11);
+    if (!doneByTopic[tid] || date < doneByTopic[tid]) doneByTopic[tid] = date;
+  });
+  Object.entries(doneByTopic).forEach(([topicId, completionDate]) => {
+    const topicObj = topicMap[topicId];
+    if (!topicObj) return;
+    const intervals = REVIEW_PRESETS[topicObj.materiaReviewPreset || "moderada"] || [1, 7, 21, 30];
+    const compD = new Date(completionDate + "T12:00:00");
+    intervals.forEach(interval => {
+      let revDate = new Date(compD);
+      revDate.setDate(revDate.getDate() + interval);
+      revDate = proximoDiaUtil(revDate, aulasNoDia);
+      const revKey = localDateKey(revDate);
+      if (revKey < todayKey) return; // já passou
+      // Verifica se a revisão já foi feita pelo aluno
+      const progressoRevKey = `${revKey}-${topicId}-rev`;
+      if (doneRevKeys.has(progressoRevKey)) return; // já concluída
+      if (!plan[revKey]) plan[revKey] = { date: revKey, topicos: [], reviews: [] };
+      // Evita duplicata
+      if (!plan[revKey].reviews.find(r => r.id === topicId && r.reviewInterval === interval)) {
+        plan[revKey].reviews.push({ ...topicObj, reviewInterval: interval });
+      }
+    });
+  });
+
   // Preserva os dias passados para que o histórico de semanas anteriores continue visível
   const pastPlan = {};
   Object.entries(plano.plan || {}).forEach(([key, day]) => {
